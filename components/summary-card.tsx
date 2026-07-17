@@ -60,7 +60,7 @@ export function SummaryCard({
   const selectedExpectedCount = expectedMembersByDate.get(selectedDate)?.length ?? 0;
 
   return (
-    <Card>
+    <Card className="dark:bg-card/95 dark:ring-white/10">
       <CardHeader>
         <CardTitle>Summary</CardTitle>
         <CardDescription>Daily attendance counts and monthly service stats.</CardDescription>
@@ -87,7 +87,12 @@ export function SummaryCard({
               ))}
               {calendarDays.map((day, index) => {
                 if (!day) {
-                  return <div key={`summary-empty-${index}`} className="min-h-20" />;
+                  return (
+                    <div
+                      key={`summary-empty-${index}`}
+                      className="min-h-20 rounded-lg bg-muted/20 dark:bg-white/[0.02]"
+                    />
+                  );
                 }
 
                 const count = countsByDate.get(day.date) ?? 0;
@@ -99,19 +104,27 @@ export function SummaryCard({
                     key={day.date}
                     type="button"
                     className={cn(
-                      "flex min-h-20 flex-col items-start justify-between rounded-lg border p-2 text-left transition-colors hover:bg-muted",
-                      isSelected && "border-primary bg-accent"
+                      "flex min-h-20 flex-col items-start justify-between rounded-lg border bg-background p-2 text-left transition-colors hover:bg-muted dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.07]",
+                      count > 0 &&
+                        "border-primary/30 bg-primary/5 dark:border-sky-400/35 dark:bg-sky-400/10",
+                      expectedCount > 0 &&
+                        count === 0 &&
+                        "border-amber-500/35 bg-amber-100/60 dark:border-amber-300/25 dark:bg-amber-300/10",
+                      isSelected &&
+                        "border-primary bg-accent ring-2 ring-ring/25 dark:border-sky-300/70 dark:bg-sky-300/15 dark:ring-sky-300/20"
                     )}
                     onClick={() => onSelectDate(day.date)}
                   >
-                    <span className="text-sm font-medium">{day.dayNumber}</span>
+                    <span className="text-sm font-medium text-foreground">
+                      {day.dayNumber}
+                    </span>
                     <span className="flex flex-col gap-1 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <UsersIcon data-icon="inline-start" />
                         {count}
                       </span>
                       {expectedCount > 0 ? (
-                        <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+                        <span className="rounded-sm border border-amber-500/20 bg-amber-100 px-1.5 py-0.5 font-medium text-amber-900 dark:border-amber-300/25 dark:bg-amber-300/15 dark:text-amber-100">
                           Exp {expectedCount}
                         </span>
                       ) : null}
@@ -133,7 +146,7 @@ export function SummaryCard({
               <SummaryMetric label="Busiest" value={stats.busiestCount} />
             </div>
 
-            <div className="rounded-lg border p-3">
+            <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="mb-3 flex items-center gap-2">
                 <BarChart3Icon data-icon="inline-start" />
                 <h3 className="text-sm font-medium">Weekday volume</h3>
@@ -149,9 +162,9 @@ export function SummaryCard({
                       className="grid grid-cols-[32px_1fr_32px] items-center gap-2"
                     >
                       <span className="text-xs text-muted-foreground">{weekday}</span>
-                      <div className="h-2 rounded-full bg-muted">
+                      <div className="h-2 rounded-full bg-muted dark:bg-white/10">
                         <div
-                          className="h-2 rounded-full bg-primary"
+                          className="h-2 rounded-full bg-primary dark:bg-sky-300"
                           style={{ width: `${(value / maxValue) * 100}%` }}
                         />
                       </div>
@@ -164,8 +177,8 @@ export function SummaryCard({
               </div>
             </div>
 
-            <div className="rounded-lg border">
-              <div className="flex items-center justify-between border-b px-3 py-2">
+            <div className="rounded-lg border bg-background/60 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="flex items-center justify-between border-b bg-muted/30 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
                 <div>
                   <h3 className="text-sm font-medium">
                     {new Date(`${selectedDate}T00:00:00`).toLocaleDateString()}
@@ -211,7 +224,7 @@ export function SummaryCard({
                     visibleExpectedMembers.map((member) => (
                       <div
                         key={member.id}
-                        className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0"
+                        className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0 dark:border-white/10"
                       >
                         <span className="truncate text-sm font-medium">
                           {member.displayName}
@@ -230,7 +243,7 @@ export function SummaryCard({
                   visibleEntries.map((entry) => (
                     <div
                       key={entry.id}
-                      className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0"
+                      className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0 dark:border-white/10"
                     >
                       <span className="truncate text-sm font-medium">
                         {memberById.get(entry.memberId)?.displayName ?? "Unknown member"}
@@ -242,7 +255,7 @@ export function SummaryCard({
                   ))
                 )}
               </div>
-              <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+              <div className="border-t px-3 py-2 text-xs text-muted-foreground dark:border-white/10">
                 Page {attendeePage + 1} of {attendeePageCount}
               </div>
             </div>
@@ -255,7 +268,7 @@ export function SummaryCard({
 
 function SummaryMetric({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-lg border p-3">
+    <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="text-2xl font-semibold">{value}</p>
     </div>
