@@ -129,16 +129,3 @@
     @apply bg-background text-foreground;
   }
 }
-
-@media (min-width: 64rem) and (max-height: 760px) {
-  .dashboard-shell {
-    padding-left: 0;
-  }
-
-  .dashboard-sidebar {
-    position: static;
-    inset: auto;
-    width: auto;
-    min-height: auto;
-  }
-}

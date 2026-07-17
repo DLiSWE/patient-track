@@ -875,7 +875,7 @@ export function MemberManager() {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="dashboard-shell min-h-screen lg:pl-80">
-        <aside className="dashboard-sidebar sticky top-0 z-40 bg-sidebar text-sidebar-foreground lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-80 lg:flex-col lg:gap-7 lg:px-8 lg:py-7">
+        <aside className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-80 lg:flex-col lg:gap-7 lg:overflow-y-auto lg:px-8 lg:py-7">
           <div className="flex items-center justify-between gap-3 px-4 py-3 lg:hidden">
             <div className="min-w-0">
               <p className="text-xs font-medium text-sidebar-foreground/70">
