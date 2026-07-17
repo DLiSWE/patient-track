@@ -129,3 +129,11 @@
     @apply bg-background text-foreground;
   }
 }
+
+.summary-month-input {
+  color-scheme: light;
+}
+
+.dark .summary-month-input {
+  color-scheme: dark;
+}

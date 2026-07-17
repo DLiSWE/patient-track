@@ -66,7 +66,7 @@ export function SummaryCard({
         <CardDescription>Daily attendance counts and monthly service stats.</CardDescription>
         <CardAction>
           <Input
-            className="w-40"
+            className="summary-month-input w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
             type="month"
             value={month}
             onChange={(event) => onMonthChange(event.target.value)}
@@ -148,7 +148,10 @@ export function SummaryCard({
 
             <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="mb-3 flex items-center gap-2">
-                <BarChart3Icon data-icon="inline-start" />
+                <BarChart3Icon
+                  data-icon="inline-start"
+                  className="text-muted-foreground dark:text-sky-200"
+                />
                 <h3 className="text-sm font-medium">Weekday volume</h3>
               </div>
               <div className="flex flex-col gap-2">
