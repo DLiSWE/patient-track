@@ -13,6 +13,7 @@ import {
   BarChart3Icon,
   BellIcon,
   CalendarCheckIcon,
+  CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Loader2Icon,
@@ -35,6 +36,7 @@ import {
   toMemberInsert,
   toMemberUpdate,
 } from "@/lib/member-store";
+import { AddMembersDialog } from "@/components/add-members-dialog";
 import {
   ServiceEntry,
   ServiceEntryFormValues,
@@ -105,7 +107,7 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "summary";
+type ActiveView = "members" | "services" | "summary";
 
 type SecurityEvent = {
   id: string;
@@ -128,6 +130,11 @@ const securityEventLookbackMs = 24 * 60 * 60 * 1000;
 const memberActivityPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
 const summaryAttendeesPageSize = 10;
+const viewTitles: Record<ActiveView, string> = {
+  members: "Members",
+  services: "Services",
+  summary: "Summary",
+};
 
 export function MemberManager() {
   const memberFormCardRef = useRef<HTMLDivElement>(null);
@@ -166,6 +173,7 @@ export function MemberManager() {
   const [query, setQuery] = useState("");
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
+  const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteAuthError, setDeleteAuthError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
@@ -834,6 +842,53 @@ export function MemberManager() {
     setIsSaving(false);
   }
 
+  async function handleBulkAddMembers(
+    rows: { displayName: string; provider: string; serviceDays: string }[]
+  ) {
+    if (!supabase) {
+      return false;
+    }
+
+    const inserts = rows.map(toMemberInsert).filter((row) => row.display_name);
+
+    if (inserts.length === 0) {
+      return false;
+    }
+
+    setMessage(null);
+    setIsSaving(true);
+
+    const { data, error } = await supabase
+      .from("members")
+      .insert(inserts)
+      .select("id, display_name, provider, service_days, created_at, updated_at");
+
+    if (error) {
+      showError(error.message);
+      setIsSaving(false);
+      return false;
+    }
+
+    const nextMembers = data.map(mapMemberRow);
+    setMembers((currentMembers) =>
+      [...nextMembers, ...currentMembers].sort((left, right) =>
+        left.displayName.localeCompare(right.displayName)
+      )
+    );
+
+    if (!serviceForm.memberId && nextMembers[0]) {
+      const firstMember = nextMembers[0];
+      setServiceForm((currentForm) => ({ ...currentForm, memberId: firstMember.id }));
+      setSelectedServiceDates(
+        getCalendarSelectionForMonth(calendarMonth, firstMember.serviceDays, new Set())
+      );
+    }
+
+    showInfo(`Added ${nextMembers.length} member${nextMembers.length === 1 ? "" : "s"}.`);
+    setIsSaving(false);
+    return true;
+  }
+
   function editMember(member: Member) {
     setEditingId(member.id);
     setForm({
@@ -1044,7 +1099,7 @@ export function MemberManager() {
                 Sophia Members
               </p>
               <h1 className="truncate text-lg font-semibold">
-                {activeView === "summary" ? "Summary" : "Members"}
+                {viewTitles[activeView]}
               </h1>
             </div>
             <Button
@@ -1135,6 +1190,22 @@ export function MemberManager() {
                 variant="ghost"
                 className={cn(
                   "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  activeView === "services" &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+                )}
+                onClick={() => {
+                  setActiveView("services");
+                  setIsMobileNavOpen(false);
+                }}
+              >
+                <CalendarDaysIcon data-icon="inline-start" />
+                Services
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   activeView === "summary" &&
                   "bg-sidebar-accent text-sidebar-accent-foreground"
                 )}
@@ -1170,14 +1241,16 @@ export function MemberManager() {
             <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-col gap-1">
                 <h2 className="text-2xl font-semibold tracking-tight">
-                  {activeView === "summary" ? "Summary" : "Members"}
+                  {viewTitles[activeView]}
                 </h2>
                 <p className="text-sm text-muted-foreground">
                   {isLoading
                     ? "Loading..."
                     : activeView === "summary"
                       ? `${summaryStats.totalServices} services this month`
-                      : `${members.length} total`}
+                      : activeView === "services"
+                        ? `${serviceEntries.length} recorded`
+                        : `${members.length} total`}
                 </p>
               </div>
             </header>
@@ -1226,6 +1299,213 @@ export function MemberManager() {
                 visibleEntries={visibleSummaryEntries}
                 visibleExpectedMembers={visibleSummaryExpectedMembers}
               />
+            ) : activeView === "services" ? (
+              <div className="flex flex-col gap-5">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Service calendar</CardTitle>
+                    <CardDescription>
+                      Select the service dates this member attended.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form
+                      className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)]"
+                      onSubmit={handleServiceSubmit}
+                    >
+                      <Field label="Member" htmlFor="service-member">
+                        <Select
+                          value={serviceForm.memberId}
+                          onValueChange={(value) =>
+                            handleServiceMemberChange(value ?? "")
+                          }
+                        >
+                          <SelectTrigger id="service-member" className="w-full">
+                            <span className="truncate text-left">
+                              {selectedServiceMember?.displayName ?? "Select member"}
+                            </span>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {members.map((member) => (
+                                <SelectItem key={member.id} value={member.id}>
+                                  {member.displayName}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+
+                      <div className="flex flex-col gap-4 lg:col-span-2">
+                        <ServiceCalendar
+                          month={calendarMonth}
+                          days={calendarDays}
+                          expectedDates={expectedServiceDates}
+                          recordedDates={recordedServiceDatesForMemberMonth}
+                          selectedDates={selectedServiceDates}
+                          onClearDates={removeAllSelectedServiceDates}
+                          onMonthChange={handleCalendarMonthChange}
+                          onResetExpected={resetExpectedServiceDates}
+                          onToggleDate={toggleSelectedServiceDate}
+                        />
+                        <div className="flex min-h-8 flex-wrap gap-2">
+                          {selectedServiceDates.length === 0 ? (
+                            <span className="text-sm text-muted-foreground">
+                              No dates selected
+                            </span>
+                          ) : (
+                            selectedServiceDates.map((serviceDate) => (
+                              <Badge key={serviceDate} variant="secondary">
+                                {new Date(`${serviceDate}T00:00:00`).toLocaleDateString()}
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${serviceDate}`}
+                                  onClick={() => removeSelectedServiceDate(serviceDate)}
+                                >
+                                  <XIcon data-icon="inline-end" />
+                                </button>
+                              </Badge>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      <Button
+                        type="submit"
+                        className="lg:col-span-2"
+                        disabled={
+                          isSaving ||
+                          members.length === 0 ||
+                          serviceChangeCount === 0
+                        }
+                      >
+                        {isSaving ? (
+                          <Loader2Icon data-icon="inline-start" />
+                        ) : (
+                          <CalendarCheckIcon data-icon="inline-start" />
+                        )}
+                        Save {serviceChangeCount} changes
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Recent services</CardTitle>
+                    <CardDescription>
+                      Latest service entries from the shared log.
+                    </CardDescription>
+                    <CardAction>
+                      <Select
+                        value={String(servicePageSize)}
+                        onValueChange={(value) => {
+                          setServicePageSize(Number(value ?? 10));
+                          setServicePage(0);
+                        }}
+                      >
+                        <SelectTrigger className="w-24">
+                          <span>{servicePageSize}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {servicePageSizeOptions.map((option) => (
+                              <SelectItem key={option} value={String(option)}>
+                                {option}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <div className="flex min-h-44 items-center justify-center gap-2 text-sm text-muted-foreground">
+                        <Loader2Icon data-icon="inline-start" />
+                        Loading services
+                      </div>
+                    ) : serviceEntries.length === 0 ? (
+                      <div className="flex min-h-44 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
+                        <h3 className="font-medium">No services recorded</h3>
+                        <p className="max-w-sm text-sm text-muted-foreground">
+                          Record a member service from the form above.
+                        </p>
+                      </div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Member</TableHead>
+                            <TableHead>Service</TableHead>
+                            <TableHead className="w-28 text-right">Date</TableHead>
+                            <TableHead className="text-right">Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {visibleServiceEntries.map((entry) => {
+                            const member = memberById.get(entry.memberId);
+                            return (
+                              <TableRow key={entry.id}>
+                                <TableCell className="font-medium">
+                                  {member?.displayName ?? "Unknown member"}
+                                </TableCell>
+                                <TableCell>{entry.serviceLabel}</TableCell>
+                                <TableCell className="text-right whitespace-nowrap">
+                                  {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString()}
+                                </TableCell>
+                                <TableCell>
+                                  <div className="flex justify-end">
+                                    <Button
+                                      type="button"
+                                      variant="destructive"
+                                      size="sm"
+                                      onClick={() => deleteServiceEntry(entry.id)}
+                                    >
+                                      <Trash2Icon data-icon="inline-start" />
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    )}
+                    <div className="mt-3 flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">
+                        Page {safeServicePage + 1} of {servicePageCount}
+                      </span>
+                      <div className="flex gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          disabled={safeServicePage === 0}
+                          onClick={() => setServicePage(Math.max(0, safeServicePage - 1))}
+                        >
+                          <ChevronLeftIcon />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          disabled={safeServicePage >= servicePageCount - 1}
+                          onClick={() =>
+                            setServicePage(
+                              Math.min(servicePageCount - 1, safeServicePage + 1)
+                            )
+                          }
+                        >
+                          <ChevronRightIcon />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             ) : (
               <>
                 <Card>
@@ -1329,88 +1609,98 @@ export function MemberManager() {
                 </Card>
 
                 <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-                  <div className="flex flex-col gap-5">
-                    <Card ref={memberFormCardRef}>
-                      <CardHeader>
-                        <CardTitle>{editingId ? "Update member" : "Add member"}</CardTitle>
-                        <CardDescription>
-                          These are the only fields this app saves.
-                        </CardDescription>
+                  <Card ref={memberFormCardRef}>
+                    <CardHeader>
+                      <CardTitle>{editingId ? "Update member" : "Add member"}</CardTitle>
+                      <CardDescription>
+                        These are the only fields this app saves.
+                      </CardDescription>
+                      <CardAction className="flex gap-2">
                         {editingId ? (
-                          <CardAction>
-                            <Button variant="ghost" size="sm" onClick={resetForm}>
-                              Cancel
-                            </Button>
-                          </CardAction>
-                        ) : null}
-                      </CardHeader>
-                      <CardContent>
-                        <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-                          <Field label="Member name" htmlFor="display-name">
-                            <Input
-                              ref={memberNameInputRef}
-                              id="display-name"
-                              placeholder="Last, First M."
-                              value={form.displayName}
-                              onChange={(event) =>
-                                setForm({ ...form, displayName: event.target.value })
-                              }
-                              required
-                            />
-                          </Field>
-
-                          <Field label="Provider" htmlFor="provider">
-                            <Select
-                              value={form.provider}
-                              onValueChange={(value) =>
-                                setForm({ ...form, provider: value ?? "" })
-                              }
-                            >
-                              <SelectTrigger id="provider" className="w-full">
-                                <span className="truncate text-left">
-                                  {form.provider
-                                    ? getProviderLabel(form.provider)
-                                    : "Select provider"}
-                                </span>
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  {providerOptions.map((provider) => (
-                                    <SelectItem
-                                      key={provider.value}
-                                      value={provider.value}
-                                    >
-                                      {provider.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          </Field>
-
-                          <Field label="Service days" htmlFor="service-days">
-                            <Input
-                              id="service-days"
-                              placeholder="MTWTHF"
-                              value={form.serviceDays}
-                              onChange={(event) =>
-                                setForm({ ...form, serviceDays: event.target.value })
-                              }
-                            />
-                          </Field>
-
-                          <Button type="submit" disabled={isSaving}>
-                            {isSaving ? (
-                              <Loader2Icon data-icon="inline-start" />
-                            ) : (
-                              <PlusIcon data-icon="inline-start" />
-                            )}
-                            {editingId ? "Save changes" : "Add member"}
+                          <Button variant="ghost" size="sm" onClick={resetForm}>
+                            Cancel
                           </Button>
-                        </form>
-                      </CardContent>
-                    </Card>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsBulkAddOpen(true)}
+                          >
+                            <UsersIcon data-icon="inline-start" />
+                            Add multiple
+                          </Button>
+                        )}
+                      </CardAction>
+                    </CardHeader>
+                    <CardContent>
+                      <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+                        <Field label="Member name" htmlFor="display-name">
+                          <Input
+                            ref={memberNameInputRef}
+                            id="display-name"
+                            placeholder="Last, First M."
+                            value={form.displayName}
+                            onChange={(event) =>
+                              setForm({ ...form, displayName: event.target.value })
+                            }
+                            required
+                          />
+                        </Field>
 
+                        <Field label="Provider" htmlFor="provider">
+                          <Select
+                            value={form.provider}
+                            onValueChange={(value) =>
+                              setForm({ ...form, provider: value ?? "" })
+                            }
+                          >
+                            <SelectTrigger id="provider" className="w-full">
+                              <span className="truncate text-left">
+                                {form.provider
+                                  ? getProviderLabel(form.provider)
+                                  : "Select provider"}
+                              </span>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {providerOptions.map((provider) => (
+                                  <SelectItem
+                                    key={provider.value}
+                                    value={provider.value}
+                                  >
+                                    {provider.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+
+                        <Field label="Service days" htmlFor="service-days">
+                          <Input
+                            id="service-days"
+                            placeholder="MTWTHF"
+                            value={form.serviceDays}
+                            onChange={(event) =>
+                              setForm({ ...form, serviceDays: event.target.value })
+                            }
+                          />
+                        </Field>
+
+                        <Button type="submit" disabled={isSaving}>
+                          {isSaving ? (
+                            <Loader2Icon data-icon="inline-start" />
+                          ) : (
+                            <PlusIcon data-icon="inline-start" />
+                          )}
+                          {editingId ? "Save changes" : "Add member"}
+                        </Button>
+                      </form>
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-5 sm:grid-cols-2">
                     <NewMembersCard
                       title="Updated members"
                       description={`${membersUpdatedThisMonth.length} updated this month`}
@@ -1428,213 +1718,6 @@ export function MemberManager() {
                       pageSize={memberActivityPageSize}
                       onPageChange={setNewMembersPage}
                     />
-                  </div>
-
-                  <div className="flex flex-col gap-5">
-                    <Card>
-                      <CardHeader>
-                        <CardTitle>Service calendar</CardTitle>
-                        <CardDescription>
-                          Select the service dates this member attended.
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <form
-                          className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)]"
-                          onSubmit={handleServiceSubmit}
-                        >
-                          <Field label="Member" htmlFor="service-member">
-                            <Select
-                              value={serviceForm.memberId}
-                              onValueChange={(value) =>
-                                handleServiceMemberChange(value ?? "")
-                              }
-                            >
-                              <SelectTrigger id="service-member" className="w-full">
-                                <span className="truncate text-left">
-                                  {selectedServiceMember?.displayName ?? "Select member"}
-                                </span>
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  {members.map((member) => (
-                                    <SelectItem key={member.id} value={member.id}>
-                                      {member.displayName}
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          </Field>
-
-                          <div className="flex flex-col gap-4 lg:col-span-2">
-                            <ServiceCalendar
-                              month={calendarMonth}
-                              days={calendarDays}
-                              expectedDates={expectedServiceDates}
-                              recordedDates={recordedServiceDatesForMemberMonth}
-                              selectedDates={selectedServiceDates}
-                              onClearDates={removeAllSelectedServiceDates}
-                              onMonthChange={handleCalendarMonthChange}
-                              onResetExpected={resetExpectedServiceDates}
-                              onToggleDate={toggleSelectedServiceDate}
-                            />
-                            <div className="flex min-h-8 flex-wrap gap-2">
-                              {selectedServiceDates.length === 0 ? (
-                                <span className="text-sm text-muted-foreground">
-                                  No dates selected
-                                </span>
-                              ) : (
-                                selectedServiceDates.map((serviceDate) => (
-                                  <Badge key={serviceDate} variant="secondary">
-                                    {new Date(`${serviceDate}T00:00:00`).toLocaleDateString()}
-                                    <button
-                                      type="button"
-                                      aria-label={`Remove ${serviceDate}`}
-                                      onClick={() => removeSelectedServiceDate(serviceDate)}
-                                    >
-                                      <XIcon data-icon="inline-end" />
-                                    </button>
-                                  </Badge>
-                                ))
-                              )}
-                            </div>
-                          </div>
-
-                          <Button
-                            type="submit"
-                            className="lg:col-span-2"
-                            disabled={
-                              isSaving ||
-                              members.length === 0 ||
-                              serviceChangeCount === 0
-                            }
-                          >
-                            {isSaving ? (
-                              <Loader2Icon data-icon="inline-start" />
-                            ) : (
-                              <CalendarCheckIcon data-icon="inline-start" />
-                            )}
-                            Save {serviceChangeCount} changes
-                          </Button>
-                        </form>
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardHeader>
-                        <CardTitle>Recent services</CardTitle>
-                        <CardDescription>
-                          Latest service entries from the shared log.
-                        </CardDescription>
-                        <CardAction>
-                          <Select
-                            value={String(servicePageSize)}
-                            onValueChange={(value) => {
-                              setServicePageSize(Number(value ?? 10));
-                              setServicePage(0);
-                            }}
-                          >
-                            <SelectTrigger className="w-24">
-                              <span>{servicePageSize}</span>
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                {servicePageSizeOptions.map((option) => (
-                                  <SelectItem key={option} value={String(option)}>
-                                    {option}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </CardAction>
-                      </CardHeader>
-                      <CardContent>
-                        {isLoading ? (
-                          <div className="flex min-h-44 items-center justify-center gap-2 text-sm text-muted-foreground">
-                            <Loader2Icon data-icon="inline-start" />
-                            Loading services
-                          </div>
-                        ) : serviceEntries.length === 0 ? (
-                          <div className="flex min-h-44 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
-                            <h3 className="font-medium">No services recorded</h3>
-                            <p className="max-w-sm text-sm text-muted-foreground">
-                              Record a member service from the form above.
-                            </p>
-                          </div>
-                        ) : (
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Member</TableHead>
-                                <TableHead>Service</TableHead>
-                                <TableHead className="w-28 text-right">Date</TableHead>
-                                <TableHead className="text-right">Actions</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {visibleServiceEntries.map((entry) => {
-                                const member = memberById.get(entry.memberId);
-                                return (
-                                  <TableRow key={entry.id}>
-                                    <TableCell className="font-medium">
-                                      {member?.displayName ?? "Unknown member"}
-                                    </TableCell>
-                                    <TableCell>{entry.serviceLabel}</TableCell>
-                                    <TableCell className="text-right whitespace-nowrap">
-                                      {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString()}
-                                    </TableCell>
-                                    <TableCell>
-                                      <div className="flex justify-end">
-                                        <Button
-                                          type="button"
-                                          variant="destructive"
-                                          size="sm"
-                                          onClick={() => deleteServiceEntry(entry.id)}
-                                        >
-                                          <Trash2Icon data-icon="inline-start" />
-                                          Delete
-                                        </Button>
-                                      </div>
-                                    </TableCell>
-                                  </TableRow>
-                                );
-                              })}
-                            </TableBody>
-                          </Table>
-                        )}
-                        <div className="mt-3 flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">
-                            Page {safeServicePage + 1} of {servicePageCount}
-                          </span>
-                          <div className="flex gap-1">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              disabled={safeServicePage === 0}
-                              onClick={() => setServicePage(Math.max(0, safeServicePage - 1))}
-                            >
-                              <ChevronLeftIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              disabled={safeServicePage >= servicePageCount - 1}
-                              onClick={() =>
-                                setServicePage(
-                                  Math.min(servicePageCount - 1, safeServicePage + 1)
-                                )
-                              }
-                            >
-                              <ChevronRightIcon />
-                            </Button>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
                   </div>
                 </div>
               </>
@@ -1695,6 +1778,13 @@ export function MemberManager() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AddMembersDialog
+        isSaving={isSaving}
+        onOpenChange={setIsBulkAddOpen}
+        onSubmit={handleBulkAddMembers}
+        open={isBulkAddOpen}
+      />
     </main>
   );
 }
