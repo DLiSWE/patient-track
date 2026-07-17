@@ -55,7 +55,7 @@ export function ServiceCalendar({
         <Field label="Month" htmlFor="service-month">
           <Input
             id="service-month"
-            className="w-full"
+            className="service-month-input w-full max-w-full min-w-0"
             type="month"
             value={month}
             onChange={(event) => onMonthChange(event.target.value)}

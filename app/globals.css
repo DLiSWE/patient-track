@@ -137,3 +137,22 @@
 .dark .summary-month-input {
   color-scheme: dark;
 }
+
+.service-month-input {
+  box-sizing: border-box;
+  color-scheme: light;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dark .service-month-input {
+  color-scheme: dark;
+}
+
+@supports (-webkit-touch-callout: none) {
+  .service-month-input {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+  }
+}
