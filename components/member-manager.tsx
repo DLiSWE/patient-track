@@ -11,6 +11,7 @@ import type { Session } from "@supabase/supabase-js";
 import {
   AlertCircleIcon,
   BarChart3Icon,
+  BellIcon,
   CalendarCheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -106,11 +107,24 @@ type AuthForm = {
 
 type ActiveView = "members" | "summary";
 
+type SecurityEvent = {
+  id: string;
+  attemptedEmail: string | null;
+  attemptCount: number;
+  createdAt: string;
+  lockedUntil: string;
+};
+
 const emptyAuthForm: AuthForm = {
   email: "",
   password: "",
 };
 
+const failedSignInStorageKey = "sophia_failed_sign_in";
+const dismissedSecurityEventStorageKey = "sophia_dismissed_security_event";
+const maxFailedSignInAttempts = 5;
+const signInLockoutMs = 15 * 60 * 1000;
+const securityEventLookbackMs = 24 * 60 * 60 * 1000;
 const memberActivityPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
 const summaryAttendeesPageSize = 10;
@@ -120,6 +134,7 @@ export function MemberManager() {
   const memberNameInputRef = useRef<HTMLInputElement>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [serviceEntries, setServiceEntries] = useState<ServiceEntry[]>([]);
+  const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [form, setForm] = useState<MemberFormValues>(emptyMemberForm);
   const [serviceForm, setServiceForm] = useState<ServiceEntryFormValues>(
     createEmptyServiceEntryForm
@@ -136,6 +151,14 @@ export function MemberManager() {
     getTodayDate(),
   ]);
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
+  const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>({
+    attempts: 0,
+    lockedUntil: null,
+  });
+  const [dismissedSecurityEventId, setDismissedSecurityEventId] = useState<
+    string | null
+  >(null);
+  const [hasMounted, setHasMounted] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("members");
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
@@ -149,6 +172,27 @@ export function MemberManager() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageKind, setMessageKind] = useState<"error" | "info">("error");
+
+  useEffect(() => {
+    setHasMounted(true);
+    setFailedSignInState(getStoredFailedSignInState());
+    setDismissedSecurityEventId(getStoredDismissedSecurityEventId());
+  }, []);
+
+  useEffect(() => {
+    if (!failedSignInState.lockedUntil) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      clearStoredFailedSignInState();
+      setFailedSignInState({ attempts: 0, lockedUntil: null });
+    }, Math.max(0, failedSignInState.lockedUntil - Date.now()));
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [failedSignInState.lockedUntil]);
 
   useEffect(() => {
     if (!supabase) {
@@ -353,6 +397,21 @@ export function MemberManager() {
     () => getSummaryStats(summaryEntriesForMonth, members.length),
     [members.length, summaryEntriesForMonth]
   );
+  const latestSecurityEvent = securityEvents[0] ?? null;
+  const visibleSecurityEvent =
+    latestSecurityEvent?.id === dismissedSecurityEventId ? null : latestSecurityEvent;
+  const latestSecurityEventTime = useMemo(
+    () =>
+      visibleSecurityEvent
+        ? formatSecurityEventDate(visibleSecurityEvent.createdAt)
+        : "",
+    [visibleSecurityEvent]
+  );
+  const isSignInLocked = Boolean(
+    hasMounted &&
+    failedSignInState.lockedUntil &&
+    failedSignInState.lockedUntil > Date.now()
+  );
 
   function showError(nextMessage: string) {
     setMessageKind("error");
@@ -432,6 +491,58 @@ export function MemberManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    loadSecurityEvents();
+    const intervalId = window.setInterval(loadSecurityEvents, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  async function loadSecurityEvents() {
+    if (!supabase) {
+      return;
+    }
+
+    const since = new Date(Date.now() - securityEventLookbackMs).toISOString();
+    const { data, error } = await supabase
+      .from("security_events")
+      .select("id, attempted_email, attempt_count, locked_until, created_at")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      setSecurityEvents([]);
+      return;
+    }
+
+    setSecurityEvents(
+      data.map((event) => ({
+        id: event.id,
+        attemptedEmail: event.attempted_email,
+        attemptCount: event.attempt_count,
+        createdAt: event.created_at,
+        lockedUntil: event.locked_until,
+      }))
+    );
+  }
+
+  function acknowledgeSecurityEvent() {
+    if (!visibleSecurityEvent) {
+      return;
+    }
+
+    setDismissedSecurityEventId(visibleSecurityEvent.id);
+    storeDismissedSecurityEventId(visibleSecurityEvent.id);
+  }
+
   async function handleSignIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -439,17 +550,59 @@ export function MemberManager() {
       return;
     }
 
+    let currentFailedSignInState = failedSignInState;
+
+    if (
+      currentFailedSignInState.lockedUntil &&
+      currentFailedSignInState.lockedUntil <= Date.now()
+    ) {
+      currentFailedSignInState = { attempts: 0, lockedUntil: null };
+      setFailedSignInState(currentFailedSignInState);
+      clearStoredFailedSignInState();
+    }
+
+    if (
+      currentFailedSignInState.lockedUntil &&
+      currentFailedSignInState.lockedUntil > Date.now()
+    ) {
+      showError(getLockoutMessage(currentFailedSignInState.lockedUntil));
+      return;
+    }
+
     setMessage(null);
     setIsSaving(true);
 
+    const email = authForm.email.trim();
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: authForm.email.trim(),
+      email,
       password: authForm.password,
     });
 
     if (error) {
-      showError(error.message);
+      const nextAttempts = currentFailedSignInState.attempts + 1;
+      const lockedUntil =
+        nextAttempts >= maxFailedSignInAttempts
+          ? Date.now() + signInLockoutMs
+          : null;
+      const nextFailedSignInState = {
+        attempts: lockedUntil ? maxFailedSignInAttempts : nextAttempts,
+        lockedUntil,
+      };
+
+      setFailedSignInState(nextFailedSignInState);
+      storeFailedSignInState(nextFailedSignInState);
+
+      if (lockedUntil) {
+        await reportSecurityEvent(email, nextAttempts, lockedUntil);
+        showError(getLockoutMessage(lockedUntil));
+      } else {
+        showError(
+          `${error.message} ${maxFailedSignInAttempts - nextAttempts} attempts left.`
+        );
+      }
     } else {
+      clearStoredFailedSignInState();
+      setFailedSignInState({ attempts: 0, lockedUntil: null });
       setSession(data.session);
       setAuthForm(emptyAuthForm);
     }
@@ -839,6 +992,7 @@ export function MemberManager() {
                 <Input
                   id="email"
                   autoComplete="email"
+                  disabled={isSaving || isLoading || isSignInLocked}
                   type="email"
                   value={authForm.email}
                   onChange={(event) =>
@@ -852,6 +1006,7 @@ export function MemberManager() {
                 <Input
                   id="password"
                   autoComplete="current-password"
+                  disabled={isSaving || isLoading || isSignInLocked}
                   type="password"
                   value={authForm.password}
                   onChange={(event) =>
@@ -861,9 +1016,16 @@ export function MemberManager() {
                 />
               </Field>
 
-              <Button type="submit" disabled={isSaving || isLoading}>
+              <Button
+                type="submit"
+                disabled={
+                  isSaving ||
+                  isLoading ||
+                  isSignInLocked
+                }
+              >
                 {isSaving || isLoading ? <Loader2Icon data-icon="inline-start" /> : null}
-                Sign in
+                {isSignInLocked ? "Login locked" : "Sign in"}
               </Button>
             </form>
           </CardContent>
@@ -926,6 +1088,30 @@ export function MemberManager() {
                 DOBs, insurance IDs, authorization numbers, claim notes, diagnoses.
               </AlertDescription>
             </Alert>
+
+            {visibleSecurityEvent ? (
+              <Alert className="border-amber-400/30 bg-amber-400/10 text-sidebar-foreground">
+                <BellIcon data-icon="inline-start" />
+                <AlertTitle className="flex items-center justify-between gap-2">
+                  Login warning
+                  <Badge variant="secondary">1 alert</Badge>
+                </AlertTitle>
+                <AlertDescription className="text-sidebar-foreground/75">
+                  {visibleSecurityEvent.attemptedEmail || "Unknown email"} hit{" "}
+                  {visibleSecurityEvent.attemptCount} failed attempts at{" "}
+                  {latestSecurityEventTime}.
+                </AlertDescription>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 border-amber-400/40 bg-transparent text-sidebar-foreground hover:bg-amber-400/15"
+                  onClick={acknowledgeSecurityEvent}
+                >
+                  Acknowledge
+                </Button>
+              </Alert>
+            ) : null}
 
             <nav className="flex flex-col gap-2">
               <Button
@@ -1511,6 +1697,94 @@ export function MemberManager() {
       </AlertDialog>
     </main>
   );
+}
+
+type FailedSignInState = {
+  attempts: number;
+  lockedUntil: number | null;
+};
+
+function getStoredFailedSignInState(): FailedSignInState {
+  if (typeof window === "undefined") {
+    return { attempts: 0, lockedUntil: null };
+  }
+
+  const storedValue = window.localStorage.getItem(failedSignInStorageKey);
+
+  if (!storedValue) {
+    return { attempts: 0, lockedUntil: null };
+  }
+
+  try {
+    const parsedValue = JSON.parse(storedValue) as FailedSignInState;
+
+    if (parsedValue.lockedUntil && parsedValue.lockedUntil <= Date.now()) {
+      clearStoredFailedSignInState();
+      return { attempts: 0, lockedUntil: null };
+    }
+
+    return {
+      attempts: Number(parsedValue.attempts) || 0,
+      lockedUntil: parsedValue.lockedUntil || null,
+    };
+  } catch {
+    clearStoredFailedSignInState();
+    return { attempts: 0, lockedUntil: null };
+  }
+}
+
+function storeFailedSignInState(state: FailedSignInState) {
+  window.localStorage.setItem(failedSignInStorageKey, JSON.stringify(state));
+}
+
+function clearStoredFailedSignInState() {
+  window.localStorage.removeItem(failedSignInStorageKey);
+}
+
+function getStoredDismissedSecurityEventId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage.getItem(dismissedSecurityEventStorageKey);
+}
+
+function storeDismissedSecurityEventId(eventId: string) {
+  window.localStorage.setItem(dismissedSecurityEventStorageKey, eventId);
+}
+
+function getLockoutMessage(lockedUntil: number) {
+  const minutesLeft = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 60000));
+  return `Too many failed sign-in attempts. Login is locked for ${minutesLeft} minutes.`;
+}
+
+function formatSecurityEventDate(value: string) {
+  return new Date(value).toLocaleString("en-US", {
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    timeZone: "America/New_York",
+  });
+}
+
+async function reportSecurityEvent(
+  attemptedEmail: string,
+  attemptCount: number,
+  lockedUntil: number
+) {
+  if (!supabase) {
+    return;
+  }
+
+  await supabase.from("security_events").insert({
+    attempted_email: attemptedEmail || null,
+    attempt_count: attemptCount,
+    event_type: "sign_in_lockout",
+    locked_until: new Date(lockedUntil).toISOString(),
+    user_agent:
+      typeof window === "undefined" ? null : window.navigator.userAgent.slice(0, 500),
+  });
 }
 
 function Metric({ label, value }: { label: string; value: number }) {

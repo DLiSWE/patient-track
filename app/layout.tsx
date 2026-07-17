@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ThemeInitializer } from "@/components/theme-initializer";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,21 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (() => {
-                try {
-                  const savedTheme = window.localStorage.getItem("theme");
-                  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-                  if (savedTheme === "dark" || (!savedTheme && prefersDark)) {
-                    document.documentElement.classList.add("dark");
-                  }
-                } catch {}
-              })();
-            `,
-          }}
-        />
+        <ThemeInitializer />
         {children}
       </body>
     </html>
