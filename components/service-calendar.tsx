@@ -51,18 +51,18 @@ export function ServiceCalendar({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] md:items-end">
         <Field label="Month" htmlFor="service-month">
           <Input
             id="service-month"
-            className="sm:w-48"
+            className="w-full"
             type="month"
             value={month}
             onChange={(event) => onMonthChange(event.target.value)}
           />
         </Field>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 md:justify-self-end">
           <Button type="button" variant="outline" onClick={onResetExpected}>
             <RotateCcwIcon data-icon="inline-start" />
             Expected dates
