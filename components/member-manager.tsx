@@ -16,6 +16,7 @@ import {
   ChevronRightIcon,
   Loader2Icon,
   LogOutIcon,
+  MenuIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
@@ -137,6 +138,7 @@ export function MemberManager() {
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [session, setSession] = useState<Session | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("members");
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(true);
@@ -872,73 +874,108 @@ export function MemberManager() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="min-h-screen lg:pl-80">
-        <aside className="flex flex-col gap-7 bg-sidebar px-6 py-7 text-sidebar-foreground lg:fixed lg:inset-y-0 lg:left-0 lg:w-80 lg:px-8">
-          <div className="flex flex-col gap-4">
-            <p className="text-sm font-medium text-sidebar-foreground/70">
-              Sophia Members
-            </p>
-            <div className="flex flex-col gap-3">
-              <h1 className="text-3xl font-semibold tracking-tight">
-                Member directory
-              </h1>
-              <p className="text-sm leading-6 text-sidebar-foreground/70">
-                Store only the operational basics: member name, provider, and
-                service days.
+      <div className="dashboard-shell min-h-screen lg:pl-80">
+        <aside className="dashboard-sidebar sticky top-0 z-40 bg-sidebar text-sidebar-foreground lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-80 lg:flex-col lg:gap-7 lg:px-8 lg:py-7">
+          <div className="flex items-center justify-between gap-3 px-4 py-3 lg:hidden">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-sidebar-foreground/70">
+                Sophia Members
               </p>
+              <h1 className="truncate text-lg font-semibold">
+                {activeView === "summary" ? "Summary" : "Members"}
+              </h1>
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
+              aria-label={isMobileNavOpen ? "Close navigation" : "Open navigation"}
+              aria-expanded={isMobileNavOpen}
+              onClick={() => setIsMobileNavOpen((isOpen) => !isOpen)}
+            >
+              {isMobileNavOpen ? <XIcon /> : <MenuIcon />}
+            </Button>
           </div>
 
-          <Alert className="bg-sidebar-accent text-sidebar-accent-foreground">
-            <AlertCircleIcon data-icon="inline-start" />
-            <AlertTitle>Keep out</AlertTitle>
-            <AlertDescription className="text-sidebar-accent-foreground/70">
-              DOBs, insurance IDs, authorization numbers, claim notes, diagnoses.
-            </AlertDescription>
-          </Alert>
+          <div
+            className={cn(
+              "flex flex-col gap-7 border-t border-sidebar-border px-6 py-5 lg:flex lg:flex-1 lg:border-t-0 lg:px-0 lg:py-0",
+              !isMobileNavOpen && "hidden"
+            )}
+          >
+            <div className="hidden flex-col gap-4 lg:flex">
+              <p className="text-sm font-medium text-sidebar-foreground/70">
+                Sophia Members
+              </p>
+              <div className="flex flex-col gap-3">
+                <h1 className="text-3xl font-semibold tracking-tight">
+                  Member directory
+                </h1>
+                <p className="text-sm leading-6 text-sidebar-foreground/70">
+                  Store only the operational basics: member name, provider, and
+                  service days.
+                </p>
+              </div>
+            </div>
 
-          <nav className="flex flex-col gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              className={cn(
-                "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                activeView === "members" &&
-                "bg-sidebar-accent text-sidebar-accent-foreground"
-              )}
-              onClick={() => setActiveView("members")}
-            >
-              <UsersIcon data-icon="inline-start" />
-              Members
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className={cn(
-                "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                activeView === "summary" &&
-                "bg-sidebar-accent text-sidebar-accent-foreground"
-              )}
-              onClick={() => setActiveView("summary")}
-            >
-              <BarChart3Icon data-icon="inline-start" />
-              Summary
-            </Button>
-          </nav>
+            <Alert className="bg-sidebar-accent text-sidebar-accent-foreground">
+              <AlertCircleIcon data-icon="inline-start" />
+              <AlertTitle>Keep out</AlertTitle>
+              <AlertDescription className="text-sidebar-accent-foreground/70">
+                DOBs, insurance IDs, authorization numbers, claim notes, diagnoses.
+              </AlertDescription>
+            </Alert>
 
-          <div className="mt-auto flex flex-col gap-3">
-            <Metric label="Members" value={members.length} />
-            <Metric label="Providers" value={providerCount} />
-            <Metric label="Today" value={todayServiceCount} />
-            <ThemeToggle className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground" />
-            <Button
-              variant="outline"
-              className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
-              onClick={handleSignOut}
-            >
-              <LogOutIcon data-icon="inline-start" />
-              Sign out
-            </Button>
+            <nav className="flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  activeView === "members" &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+                )}
+                onClick={() => {
+                  setActiveView("members");
+                  setIsMobileNavOpen(false);
+                }}
+              >
+                <UsersIcon data-icon="inline-start" />
+                Members
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  activeView === "summary" &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+                )}
+                onClick={() => {
+                  setActiveView("summary");
+                  setIsMobileNavOpen(false);
+                }}
+              >
+                <BarChart3Icon data-icon="inline-start" />
+                Summary
+              </Button>
+            </nav>
+
+            <div className="mt-auto flex flex-col gap-3">
+              <Metric label="Members" value={members.length} />
+              <Metric label="Providers" value={providerCount} />
+              <Metric label="Today" value={todayServiceCount} />
+              <ThemeToggle className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground" />
+              <Button
+                variant="outline"
+                className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
+                onClick={handleSignOut}
+              >
+                <LogOutIcon data-icon="inline-start" />
+                Sign out
+              </Button>
+            </div>
           </div>
         </aside>
 
