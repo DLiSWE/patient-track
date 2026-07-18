@@ -109,20 +109,10 @@ export function getExpectedServiceDatesForMonth(
     .map((day) => day.date);
 }
 
-export function getCalendarSelectionForMonth(
-  month: string,
-  serviceDays: string,
-  recordedDates: Set<string>
-) {
-  const recordedDatesForMonth = Array.from(recordedDates)
+export function getCalendarSelectionForMonth(month: string, recordedDates: Set<string>) {
+  return Array.from(recordedDates)
     .filter((serviceDate) => serviceDate.startsWith(`${month}-`))
     .sort();
-
-  if (recordedDatesForMonth.length > 0) {
-    return recordedDatesForMonth;
-  }
-
-  return getExpectedServiceDatesForMonth(month, serviceDays, new Set()).sort();
 }
 
 export function getExpectedCalendarSelectionForMonth(
@@ -138,6 +128,59 @@ export function getExpectedCalendarSelectionForMonth(
       ),
     ])
   ).sort();
+}
+
+export function getMonthDateRange(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const monthIndex = monthNumber - 1;
+  const totalDays = new Date(year, monthIndex + 1, 0).getDate();
+
+  return {
+    start: getDateString(year, monthIndex, 1),
+    end: getDateString(year, monthIndex, totalDays),
+  };
+}
+
+export function getWeekDateRange(referenceDate: string) {
+  const date = parseDateString(referenceDate);
+  const startOfWeek = new Date(date);
+  startOfWeek.setDate(date.getDate() - date.getDay());
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+
+  return {
+    start: formatDateString(startOfWeek),
+    end: formatDateString(endOfWeek),
+  };
+}
+
+export function getExpectedServiceDatesInRange(
+  startDate: string,
+  endDate: string,
+  serviceDays: string,
+  recordedDates: Set<string>
+) {
+  const weekdayIndexes = parseServiceWeekdays(serviceDays);
+
+  if (weekdayIndexes.size === 0 || endDate < startDate) {
+    return [];
+  }
+
+  const dates: string[] = [];
+  let current = parseDateString(startDate);
+  const end = parseDateString(endDate);
+
+  while (current <= end) {
+    const dateString = formatDateString(current);
+
+    if (weekdayIndexes.has(current.getDay()) && !recordedDates.has(dateString)) {
+      dates.push(dateString);
+    }
+
+    current = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1);
+  }
+
+  return dates;
 }
 
 export function getExpectedMembersByDate(
@@ -250,6 +293,10 @@ function getDateString(year: number, monthIndex: number, day: number) {
     2,
     "0"
   )}`;
+}
+
+function formatDateString(date: Date) {
+  return getDateString(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 function parseDateString(date: string) {

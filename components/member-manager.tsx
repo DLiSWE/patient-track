@@ -8,12 +8,15 @@ import {
   useState,
 } from "react";
 import type { Session } from "@supabase/supabase-js";
+import { toast } from "sonner";
 import {
   AlertCircleIcon,
   BarChart3Icon,
   BellIcon,
   CalendarCheckIcon,
+  CalendarClockIcon,
   CalendarDaysIcon,
+  CalendarRangeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Loader2Icon,
@@ -21,6 +24,7 @@ import {
   MenuIcon,
   PencilIcon,
   PlusIcon,
+  RotateCcwIcon,
   Trash2Icon,
   UsersIcon,
   XIcon,
@@ -41,14 +45,16 @@ import {
   ServiceEntry,
   ServiceEntryFormValues,
   createEmptyServiceEntryForm,
+  defaultServiceStatus,
   getTodayDate,
   mapServiceEntryRow,
+  serviceStatusOptions,
   toServiceEntryInsert,
 } from "@/lib/service-store";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
 import { NewMembersCard } from "@/components/new-members-card";
-import { ServiceCalendar } from "@/components/service-calendar";
+import { ServiceCalendar, getServiceStatusStyle } from "@/components/service-calendar";
 import { SummaryCard } from "@/components/summary-card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -96,8 +102,11 @@ import {
   getExpectedCalendarSelectionForMonth,
   getExpectedMembersByDate,
   getExpectedServiceDatesForMonth,
+  getExpectedServiceDatesInRange,
+  getMonthDateRange,
   getMonthInputValue,
   getSummaryStats,
+  getWeekDateRange,
   isDateInCurrentMonth,
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
@@ -174,12 +183,11 @@ export function MemberManager() {
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
   const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteAuthError, setDeleteAuthError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [messageKind, setMessageKind] = useState<"error" | "info">("error");
 
   useEffect(() => {
     setHasMounted(true);
@@ -310,6 +318,41 @@ export function MemberManager() {
     [recordedServiceEntriesForMemberMonth]
   );
 
+  const recordedStatusByDateForMemberMonth = useMemo(
+    () =>
+      new Map(
+        recordedServiceEntriesForMemberMonth.map((entry) => [
+          entry.serviceDate,
+          entry.serviceLabel,
+        ])
+      ),
+    [recordedServiceEntriesForMemberMonth]
+  );
+
+  const pendingStatusChanges = useMemo(() => {
+    return Object.entries(statusOverrides).flatMap(([serviceDate, status]) => {
+      const entry = recordedServiceEntriesForMemberMonth.find(
+        (candidate) => candidate.serviceDate === serviceDate
+      );
+      return entry && entry.serviceLabel !== status ? [{ entry, status }] : [];
+    });
+  }, [recordedServiceEntriesForMemberMonth, statusOverrides]);
+
+  const pendingStatusDates = useMemo(
+    () => new Set(pendingStatusChanges.map((change) => change.entry.serviceDate)),
+    [pendingStatusChanges]
+  );
+
+  const displayedStatusByDateForMemberMonth = useMemo(() => {
+    const merged = new Map(recordedStatusByDateForMemberMonth);
+
+    for (const change of pendingStatusChanges) {
+      merged.set(change.entry.serviceDate, change.status);
+    }
+
+    return merged;
+  }, [pendingStatusChanges, recordedStatusByDateForMemberMonth]);
+
   const calendarDays = useMemo(
     () => getCalendarDays(calendarMonth),
     [calendarMonth]
@@ -342,7 +385,9 @@ export function MemberManager() {
   );
 
   const serviceChangeCount =
-    newSelectedServiceDates.length + removedSelectedServiceDates.length;
+    newSelectedServiceDates.length +
+    removedSelectedServiceDates.length +
+    pendingStatusChanges.length;
   const servicePageCount = Math.max(
     1,
     Math.ceil(serviceEntries.length / servicePageSize)
@@ -422,13 +467,11 @@ export function MemberManager() {
   );
 
   function showError(nextMessage: string) {
-    setMessageKind("error");
-    setMessage(nextMessage);
+    toast.error(nextMessage);
   }
 
   function showInfo(nextMessage: string) {
-    setMessageKind("info");
-    setMessage(nextMessage);
+    toast.success(nextMessage);
   }
 
   async function loadDashboard() {
@@ -436,7 +479,6 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
     setIsLoading(true);
 
     const membersRequest = supabase
@@ -462,7 +504,6 @@ export function MemberManager() {
       setMembers(nextMembers);
       const nextServices = servicesResult.data?.map(mapServiceEntryRow) ?? [];
       const nextMemberId = serviceForm.memberId || nextMembers[0]?.id || "";
-      const nextMember = nextMembers.find((member) => member.id === nextMemberId);
       const recordedDates = new Set(
         nextServices
           .filter((entry) => entry.memberId === nextMemberId)
@@ -472,13 +513,7 @@ export function MemberManager() {
         ...currentForm,
         memberId: currentForm.memberId || nextMemberId,
       }));
-      setSelectedServiceDates(
-        getCalendarSelectionForMonth(
-          calendarMonth,
-          nextMember?.serviceDays ?? "",
-          recordedDates
-        )
-      );
+      setSelectedServiceDates(getCalendarSelectionForMonth(calendarMonth, recordedDates));
     }
 
     if (servicesResult.error) {
@@ -577,7 +612,6 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
     setIsSaving(true);
 
     const email = authForm.email.trim();
@@ -636,14 +670,19 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
+    const supabaseClient = supabase;
 
     const serviceDatesToCreate = Array.from(new Set(selectedServiceDates)).filter(
       (serviceDate) => !recordedServiceDatesForMember.has(serviceDate)
     );
     const serviceIdsToDelete = removedSelectedServiceDates.map((entry) => entry.id);
+    const statusChangesToApply = pendingStatusChanges;
 
-    if (serviceDatesToCreate.length === 0 && serviceIdsToDelete.length === 0) {
+    if (
+      serviceDatesToCreate.length === 0 &&
+      serviceIdsToDelete.length === 0 &&
+      statusChangesToApply.length === 0
+    ) {
       showInfo("No service date changes to save for this month.");
       return;
     }
@@ -669,27 +708,205 @@ export function MemberManager() {
           .order("created_at", { ascending: false })
         : { data: [], error: null };
 
-    if (deleteResult.error || insertResult.error) {
-      showError(deleteResult.error?.message || insertResult.error?.message || "Service dates could not be saved.");
+    const updateResults = await Promise.all(
+      statusChangesToApply.map(({ entry, status }) =>
+        supabaseClient
+          .from("service_entries")
+          .update({ service_label: status })
+          .eq("id", entry.id)
+          .select("id, member_id, service_date, service_label, created_at")
+          .single()
+      )
+    );
+    const updateError = updateResults.find((result) => result.error)?.error;
+
+    if (deleteResult.error || insertResult.error || updateError) {
+      showError(
+        deleteResult.error?.message ||
+        insertResult.error?.message ||
+        updateError?.message ||
+        "Service dates could not be saved."
+      );
     } else {
       const nextEntries = insertResult.data.map(mapServiceEntryRow);
+      const updatedEntries = updateResults
+        .map((result) => result.data)
+        .filter((row): row is NonNullable<typeof row> => Boolean(row))
+        .map(mapServiceEntryRow);
+      const updatedIds = new Set(updatedEntries.map((entry) => entry.id));
+
       setServiceEntries((currentEntries) =>
         [
           ...nextEntries,
-          ...currentEntries.filter((entry) => !serviceIdsToDelete.includes(entry.id)),
+          ...updatedEntries,
+          ...currentEntries.filter(
+            (entry) => !serviceIdsToDelete.includes(entry.id) && !updatedIds.has(entry.id)
+          ),
         ].sort((left, right) => {
           const dateSort = right.serviceDate.localeCompare(left.serviceDate);
           return dateSort || right.createdAt.localeCompare(left.createdAt);
         })
       );
+      setStatusOverrides({});
       showInfo("Service dates saved.");
     }
 
     setIsSaving(false);
   }
 
+  async function handleBulkFillServices(range: "week" | "monthToDate" | "month") {
+    if (!supabase) {
+      return;
+    }
+
+    const today = getTodayDate();
+    const monthRange = getMonthDateRange(calendarMonth);
+    const { start, end } =
+      range === "week"
+        ? getWeekDateRange(today)
+        : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
+
+    const recordedDatesByMember = new Map<string, Set<string>>();
+    for (const entry of serviceEntries) {
+      const recordedDates = recordedDatesByMember.get(entry.memberId) ?? new Set<string>();
+      recordedDates.add(entry.serviceDate);
+      recordedDatesByMember.set(entry.memberId, recordedDates);
+    }
+
+    const inserts = members.flatMap((member) => {
+      if (!member.serviceDays) {
+        return [];
+      }
+
+      const expectedDates = getExpectedServiceDatesInRange(
+        start,
+        end,
+        member.serviceDays,
+        recordedDatesByMember.get(member.id) ?? new Set<string>()
+      );
+
+      return expectedDates.map((serviceDate) =>
+        toServiceEntryInsert({
+          memberId: member.id,
+          serviceDate,
+          serviceLabel: defaultServiceStatus,
+        })
+      );
+    });
+
+    if (inserts.length === 0) {
+      showInfo("Everyone is already up to date for this range.");
+      return;
+    }
+
+    setIsSaving(true);
+
+    const { data, error } = await supabase
+      .from("service_entries")
+      .insert(inserts)
+      .select("id, member_id, service_date, service_label, created_at")
+      .order("service_date", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      showError(error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const nextEntries = data.map(mapServiceEntryRow);
+    setServiceEntries((currentEntries) =>
+      [...nextEntries, ...currentEntries].sort((left, right) => {
+        const dateSort = right.serviceDate.localeCompare(left.serviceDate);
+        return dateSort || right.createdAt.localeCompare(left.createdAt);
+      })
+    );
+
+    if (serviceForm.memberId) {
+      const recordedDates = new Set(
+        [...nextEntries, ...serviceEntries]
+          .filter((entry) => entry.memberId === serviceForm.memberId)
+          .map((entry) => entry.serviceDate)
+      );
+      setSelectedServiceDates(getCalendarSelectionForMonth(calendarMonth, recordedDates));
+    }
+
+    showInfo(
+      `Added ${nextEntries.length} service ${nextEntries.length === 1 ? "entry" : "entries"}.`
+    );
+    setIsSaving(false);
+  }
+
+  async function updateServiceEntryStatus(entryId: string, newLabel: string) {
+    if (!supabase) {
+      return false;
+    }
+
+    setIsSaving(true);
+
+    const { data, error } = await supabase
+      .from("service_entries")
+      .update({ service_label: newLabel })
+      .eq("id", entryId)
+      .select("id, member_id, service_date, service_label, created_at")
+      .single();
+
+    if (error) {
+      showError(error.message);
+      setIsSaving(false);
+      return false;
+    }
+
+    const updatedEntry = mapServiceEntryRow(data);
+    setServiceEntries((currentEntries) =>
+      currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry))
+    );
+    setIsSaving(false);
+    return true;
+  }
+
+  function handleStatusOverrideToggle(serviceDate: string) {
+    const recordedStatus = recordedStatusByDateForMemberMonth.get(serviceDate) ?? "Attended";
+    const targetStatus = serviceForm.serviceLabel;
+
+    setStatusOverrides((currentOverrides) => {
+      const pending = currentOverrides[serviceDate];
+
+      if (pending === targetStatus) {
+        const nextOverrides = { ...currentOverrides };
+        delete nextOverrides[serviceDate];
+        return nextOverrides;
+      }
+
+      if (!pending && targetStatus === recordedStatus) {
+        return currentOverrides;
+      }
+
+      return { ...currentOverrides, [serviceDate]: targetStatus };
+    });
+  }
+
+  function cancelStatusOverride(serviceDate: string) {
+    setStatusOverrides((currentOverrides) => {
+      const nextOverrides = { ...currentOverrides };
+      delete nextOverrides[serviceDate];
+      return nextOverrides;
+    });
+  }
+
+  async function handleEntryStatusChange(entry: ServiceEntry, newLabel: string) {
+    if (!newLabel || newLabel === entry.serviceLabel) {
+      return;
+    }
+
+    const succeeded = await updateServiceEntryStatus(entry.id, newLabel);
+
+    if (succeeded) {
+      showInfo(`Set ${entry.serviceDate} to ${newLabel}.`);
+    }
+  }
+
   function handleServiceMemberChange(memberId: string) {
-    const member = memberById.get(memberId);
     const recordedDates = new Set(
       serviceEntries
         .filter((entry) => entry.memberId === memberId)
@@ -700,24 +917,16 @@ export function MemberManager() {
       ...currentForm,
       memberId,
     }));
-    setSelectedServiceDates(
-      getCalendarSelectionForMonth(
-        calendarMonth,
-        member?.serviceDays ?? "",
-        recordedDates
-      )
-    );
+    setSelectedServiceDates(getCalendarSelectionForMonth(calendarMonth, recordedDates));
+    setStatusOverrides({});
   }
 
   function handleCalendarMonthChange(month: string) {
     setCalendarMonth(month);
     setSelectedServiceDates(
-      getCalendarSelectionForMonth(
-        month,
-        selectedServiceMember?.serviceDays ?? "",
-        recordedServiceDatesForMember
-      )
+      getCalendarSelectionForMonth(month, recordedServiceDatesForMember)
     );
+    setStatusOverrides({});
   }
 
   function handleSummaryMonthChange(month: string) {
@@ -756,6 +965,15 @@ export function MemberManager() {
 
   function removeAllSelectedServiceDates() {
     setSelectedServiceDates([]);
+    setStatusOverrides({});
+  }
+
+  function resetAllEdits() {
+    setSelectedServiceDates(
+      getCalendarSelectionForMonth(calendarMonth, recordedServiceDatesForMember)
+    );
+    setStatusOverrides({});
+    showInfo("Reverted to the saved state for this month.");
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -775,7 +993,6 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
     setIsSaving(true);
 
     if (editingId) {
@@ -797,11 +1014,7 @@ export function MemberManager() {
         );
         if (editingId === serviceForm.memberId) {
           setSelectedServiceDates(
-            getCalendarSelectionForMonth(
-              calendarMonth,
-              updatedMember.serviceDays,
-              recordedServiceDatesForMember
-            )
+            getCalendarSelectionForMonth(calendarMonth, recordedServiceDatesForMember)
           );
         }
         resetForm();
@@ -828,11 +1041,7 @@ export function MemberManager() {
         }));
         if (!serviceForm.memberId) {
           setSelectedServiceDates(
-            getCalendarSelectionForMonth(
-              calendarMonth,
-              nextMember.serviceDays,
-              new Set()
-            )
+            getCalendarSelectionForMonth(calendarMonth, new Set())
           );
         }
         resetForm();
@@ -855,7 +1064,6 @@ export function MemberManager() {
       return false;
     }
 
-    setMessage(null);
     setIsSaving(true);
 
     const { data, error } = await supabase
@@ -879,9 +1087,7 @@ export function MemberManager() {
     if (!serviceForm.memberId && nextMembers[0]) {
       const firstMember = nextMembers[0];
       setServiceForm((currentForm) => ({ ...currentForm, memberId: firstMember.id }));
-      setSelectedServiceDates(
-        getCalendarSelectionForMonth(calendarMonth, firstMember.serviceDays, new Set())
-      );
+      setSelectedServiceDates(getCalendarSelectionForMonth(calendarMonth, new Set()));
     }
 
     showInfo(`Added ${nextMembers.length} member${nextMembers.length === 1 ? "" : "s"}.`);
@@ -928,7 +1134,6 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
     setDeleteAuthError(null);
     setIsSaving(true);
 
@@ -982,7 +1187,6 @@ export function MemberManager() {
       return;
     }
 
-    setMessage(null);
     setIsSaving(true);
 
     const { error } = await supabase.from("service_entries").delete().eq("id", entryId);
@@ -1035,14 +1239,6 @@ export function MemberManager() {
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={handleSignIn}>
-              {message ? (
-                <Alert variant="destructive">
-                  <AlertCircleIcon data-icon="inline-start" />
-                  <AlertTitle>Sign in failed</AlertTitle>
-                  <AlertDescription>{message}</AlertDescription>
-                </Alert>
-              ) : null}
-
               <Field label="Email" htmlFor="email">
                 <Input
                   id="email"
@@ -1255,29 +1451,6 @@ export function MemberManager() {
               </div>
             </header>
 
-            {message ? (
-              <Alert
-                variant={messageKind === "error" ? "destructive" : "default"}
-                className="relative"
-              >
-                <AlertCircleIcon data-icon="inline-start" />
-                <AlertTitle>
-                  {messageKind === "error" ? "Something went wrong" : "Status"}
-                </AlertTitle>
-                <AlertDescription className="pr-9">{message}</AlertDescription>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="absolute top-2 right-2"
-                  aria-label="Dismiss message"
-                  onClick={() => setMessage(null)}
-                >
-                  <XIcon />
-                </Button>
-              </Alert>
-            ) : null}
-
             {activeView === "summary" ? (
               <SummaryCard
                 attendeePage={safeSummaryAttendeesPage}
@@ -1301,6 +1474,45 @@ export function MemberManager() {
               />
             ) : activeView === "services" ? (
               <div className="flex flex-col gap-5">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Bulk fill attendance</CardTitle>
+                    <CardDescription>
+                      Add expected service days for everyone at once, then remove anyone
+                      who didn&apos;t attend.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isSaving}
+                      onClick={() => handleBulkFillServices("week")}
+                    >
+                      <CalendarRangeIcon data-icon="inline-start" />
+                      This week
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isSaving}
+                      onClick={() => handleBulkFillServices("monthToDate")}
+                    >
+                      <CalendarClockIcon data-icon="inline-start" />
+                      Through today
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isSaving}
+                      onClick={() => handleBulkFillServices("month")}
+                    >
+                      <CalendarDaysIcon data-icon="inline-start" />
+                      Whole month
+                    </Button>
+                  </CardContent>
+                </Card>
+
                 <Card>
                   <CardHeader>
                     <CardTitle>Service calendar</CardTitle>
@@ -1337,56 +1549,127 @@ export function MemberManager() {
                         </Select>
                       </Field>
 
+                      <Field label="Status to apply on click" htmlFor="service-status">
+                        <Select
+                          value={serviceForm.serviceLabel}
+                          onValueChange={(value) =>
+                            setServiceForm((currentForm) => ({
+                              ...currentForm,
+                              serviceLabel: value ?? defaultServiceStatus,
+                            }))
+                          }
+                        >
+                          <SelectTrigger id="service-status" className="w-full">
+                            <span className="flex items-center gap-2 truncate text-left">
+                              <span
+                                className={cn(
+                                  "size-2.5 shrink-0 rounded-full",
+                                  getServiceStatusStyle(serviceForm.serviceLabel).dot
+                                )}
+                              />
+                              {serviceForm.serviceLabel}
+                            </span>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {serviceStatusOptions.map((status) => (
+                                <SelectItem key={status.value} value={status.value}>
+                                  <span
+                                    className={cn(
+                                      "size-2.5 shrink-0 rounded-full",
+                                      getServiceStatusStyle(status.value).dot
+                                    )}
+                                  />
+                                  {status.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+
                       <div className="flex flex-col gap-4 lg:col-span-2">
                         <ServiceCalendar
+                          activeStatus={serviceForm.serviceLabel}
                           month={calendarMonth}
                           days={calendarDays}
                           expectedDates={expectedServiceDates}
+                          pendingStatusDates={pendingStatusDates}
                           recordedDates={recordedServiceDatesForMemberMonth}
+                          recordedStatusByDate={displayedStatusByDateForMemberMonth}
                           selectedDates={selectedServiceDates}
                           onClearDates={removeAllSelectedServiceDates}
                           onMonthChange={handleCalendarMonthChange}
                           onResetExpected={resetExpectedServiceDates}
+                          onStatusClick={handleStatusOverrideToggle}
                           onToggleDate={toggleSelectedServiceDate}
                         />
                         <div className="flex min-h-8 flex-wrap gap-2">
-                          {selectedServiceDates.length === 0 ? (
+                          {selectedServiceDates.length === 0 &&
+                          pendingStatusChanges.length === 0 ? (
                             <span className="text-sm text-muted-foreground">
                               No dates selected
                             </span>
                           ) : (
-                            selectedServiceDates.map((serviceDate) => (
-                              <Badge key={serviceDate} variant="secondary">
-                                {new Date(`${serviceDate}T00:00:00`).toLocaleDateString()}
-                                <button
-                                  type="button"
-                                  aria-label={`Remove ${serviceDate}`}
-                                  onClick={() => removeSelectedServiceDate(serviceDate)}
-                                >
-                                  <XIcon data-icon="inline-end" />
-                                </button>
-                              </Badge>
-                            ))
+                            <>
+                              {selectedServiceDates.map((serviceDate) => (
+                                <Badge key={serviceDate} variant="secondary">
+                                  {new Date(`${serviceDate}T00:00:00`).toLocaleDateString()}
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${serviceDate}`}
+                                    onClick={() => removeSelectedServiceDate(serviceDate)}
+                                  >
+                                    <XIcon data-icon="inline-end" />
+                                  </button>
+                                </Badge>
+                              ))}
+                              {pendingStatusChanges.map(({ entry, status }) => (
+                                <Badge key={`status-${entry.serviceDate}`} variant="secondary">
+                                  {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString()}
+                                  {" → "}
+                                  {status}
+                                  <button
+                                    type="button"
+                                    aria-label={`Cancel status change for ${entry.serviceDate}`}
+                                    onClick={() => cancelStatusOverride(entry.serviceDate)}
+                                  >
+                                    <XIcon data-icon="inline-end" />
+                                  </button>
+                                </Badge>
+                              ))}
+                            </>
                           )}
                         </div>
                       </div>
 
-                      <Button
-                        type="submit"
-                        className="lg:col-span-2"
-                        disabled={
-                          isSaving ||
-                          members.length === 0 ||
-                          serviceChangeCount === 0
-                        }
-                      >
-                        {isSaving ? (
-                          <Loader2Icon data-icon="inline-start" />
-                        ) : (
-                          <CalendarCheckIcon data-icon="inline-start" />
-                        )}
-                        Save {serviceChangeCount} changes
-                      </Button>
+                      <div className="flex gap-2 lg:col-span-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={isSaving || serviceChangeCount === 0}
+                          onClick={resetAllEdits}
+                        >
+                          <RotateCcwIcon data-icon="inline-start" />
+                          Reset edits
+                        </Button>
+                        <Button
+                          type="submit"
+                          className="flex-1"
+                          disabled={
+                            isSaving ||
+                            members.length === 0 ||
+                            serviceChangeCount === 0
+                          }
+                        >
+                          {isSaving ? (
+                            <Loader2Icon data-icon="inline-start" />
+                          ) : (
+                            <CalendarCheckIcon data-icon="inline-start" />
+                          )}
+                          Save {serviceChangeCount} changes
+                        </Button>
+                      </div>
                     </form>
                   </CardContent>
                 </Card>
@@ -1451,7 +1734,41 @@ export function MemberManager() {
                                 <TableCell className="font-medium">
                                   {member?.displayName ?? "Unknown member"}
                                 </TableCell>
-                                <TableCell>{entry.serviceLabel}</TableCell>
+                                <TableCell>
+                                  <Select
+                                    value={entry.serviceLabel}
+                                    onValueChange={(value) =>
+                                      handleEntryStatusChange(entry, value ?? entry.serviceLabel)
+                                    }
+                                  >
+                                    <SelectTrigger size="sm" className="w-28">
+                                      <span className="flex items-center gap-1.5 truncate text-left">
+                                        <span
+                                          className={cn(
+                                            "size-2 shrink-0 rounded-full",
+                                            getServiceStatusStyle(entry.serviceLabel).dot
+                                          )}
+                                        />
+                                        {entry.serviceLabel}
+                                      </span>
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectGroup>
+                                        {serviceStatusOptions.map((status) => (
+                                          <SelectItem key={status.value} value={status.value}>
+                                            <span
+                                              className={cn(
+                                                "size-2 shrink-0 rounded-full",
+                                                getServiceStatusStyle(status.value).dot
+                                              )}
+                                            />
+                                            {status.label}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectGroup>
+                                    </SelectContent>
+                                  </Select>
+                                </TableCell>
                                 <TableCell className="text-right whitespace-nowrap">
                                   {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString()}
                                 </TableCell>

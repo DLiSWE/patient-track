@@ -9,7 +9,16 @@ export type ServiceEntry = {
 export type ServiceEntryFormValues = {
   memberId: string;
   serviceDate: string;
+  serviceLabel: string;
 };
+
+export const serviceStatusOptions = [
+  { label: "Attended", value: "Attended" },
+  { label: "Medical", value: "Medical" },
+  { label: "Hold", value: "Hold" },
+] as const;
+
+export const defaultServiceStatus: string = serviceStatusOptions[0].value;
 
 export type ServiceEntryRow = {
   id: string;
@@ -27,6 +36,7 @@ export function createEmptyServiceEntryForm(): ServiceEntryFormValues {
   return {
     memberId: "",
     serviceDate: getTodayDate(),
+    serviceLabel: defaultServiceStatus,
   };
 }
 
@@ -44,6 +54,6 @@ export function toServiceEntryInsert(values: ServiceEntryFormValues) {
   return {
     member_id: values.memberId,
     service_date: values.serviceDate,
-    service_label: "Attended",
+    service_label: values.serviceLabel || defaultServiceStatus,
   };
 }
