@@ -11,19 +11,24 @@ export const serviceStatusStyles: Record<
   { cell: string; dot: string; hoverRing: string }
 > = {
   attended: {
-    cell: "border-emerald-500 bg-emerald-100 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100",
+    cell: "ring-2 ring-inset ring-emerald-500 bg-emerald-100 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100",
     dot: "bg-emerald-500",
-    hoverRing: "hover:ring-2 hover:ring-emerald-400",
+    hoverRing: "hover:outline hover:outline-2 hover:outline-emerald-400",
   },
   medical: {
-    cell: "border-violet-500 bg-violet-100 text-violet-950 dark:bg-violet-950 dark:text-violet-100",
+    cell: "ring-2 ring-inset ring-violet-500 bg-violet-100 text-violet-950 dark:bg-violet-950 dark:text-violet-100",
     dot: "bg-violet-500",
-    hoverRing: "hover:ring-2 hover:ring-violet-400",
+    hoverRing: "hover:outline hover:outline-2 hover:outline-violet-400",
   },
   hold: {
-    cell: "border-slate-500 bg-slate-200 text-slate-950 dark:bg-slate-800 dark:text-slate-100",
+    cell: "ring-2 ring-inset ring-slate-500 bg-slate-200 text-slate-950 dark:bg-slate-800 dark:text-slate-100",
     dot: "bg-slate-500",
-    hoverRing: "hover:ring-2 hover:ring-slate-400",
+    hoverRing: "hover:outline hover:outline-2 hover:outline-slate-400",
+  },
+  vacation: {
+    cell: "ring-2 ring-inset ring-blue-500 bg-blue-100 text-blue-950 dark:bg-blue-950 dark:text-blue-100",
+    dot: "bg-blue-500",
+    hoverRing: "hover:outline hover:outline-2 hover:outline-blue-400",
   },
 };
 
@@ -52,6 +57,10 @@ const calendarLegend = [
     className: "border-slate-500 bg-slate-200 dark:bg-slate-800",
     label: "Hold",
   },
+  {
+    className: "border-blue-500 bg-blue-100 dark:bg-blue-950",
+    label: "Vacation",
+  },
 ];
 
 export function ServiceCalendar({
@@ -59,6 +68,7 @@ export function ServiceCalendar({
   days,
   expectedDates,
   month,
+  newStatusByDate,
   onClearDates,
   onMonthChange,
   onResetExpected,
@@ -73,6 +83,7 @@ export function ServiceCalendar({
   days: Array<CalendarDay | null>;
   expectedDates: string[];
   month: string;
+  newStatusByDate?: Map<string, string>;
   onClearDates: () => void;
   onMonthChange: (month: string) => void;
   onResetExpected: () => void;
@@ -124,8 +135,8 @@ export function ServiceCalendar({
         ))}
       </div>
 
-      <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        <span className={cn("size-2.5 shrink-0 rounded-full", activeStatusStyle.dot)} />
+      <div className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+        <span className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", activeStatusStyle.dot)} />
         <span>
           Clicking a day stages it as{" "}
           <span className="font-medium text-foreground">{activeStatus}</span> — a{" "}
@@ -134,11 +145,11 @@ export function ServiceCalendar({
         </span>
       </div>
 
-      <div className="mx-auto grid max-w-[28rem] grid-cols-7 gap-2">
+      <div className="mx-auto grid max-w-[18.25rem] grid-cols-7 gap-0.5 sm:max-w-[30rem] sm:gap-2">
         {weekdayLabels.map((weekday) => (
           <div
             key={weekday}
-            className="flex h-6 items-center justify-center text-xs font-medium text-muted-foreground"
+            className="flex h-5 items-center justify-center text-[10px] font-medium text-muted-foreground sm:h-6 sm:text-xs"
           >
             {weekday}
           </div>
@@ -157,6 +168,7 @@ export function ServiceCalendar({
           const isSaved = isSelected && isRecorded;
           const isPending = Boolean(pendingStatusDates?.has(day.date));
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
+          const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const willChangeStatus =
             !isRecorded || recordedStatus.toLowerCase() !== activeStatus.toLowerCase();
           const isClickPreviewable = isRecorded
@@ -171,25 +183,29 @@ export function ServiceCalendar({
               title={
                 isPending
                   ? `Staged as ${recordedStatus} — click to change, or Save to apply`
-                  : isRecorded && onStatusClick
-                    ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
-                    : !isRecorded
-                      ? `Click to queue as ${activeStatus} (needs Save)`
-                      : undefined
+                  : isNew
+                    ? newStatus.toLowerCase() === activeStatus.toLowerCase()
+                      ? `Staged as ${newStatus} — click to cancel`
+                      : `Staged as ${newStatus} — click to change to ${activeStatus}`
+                    : isRecorded && onStatusClick
+                      ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
+                      : !isRecorded
+                        ? `Click to queue as ${activeStatus} (needs Save)`
+                        : undefined
               }
               className={cn(
-                "flex size-14 flex-col items-center justify-center gap-0.5 rounded-md border text-base font-medium transition-colors",
-                "border-border bg-background hover:bg-muted",
+                "flex size-10 flex-col items-center justify-center gap-0 rounded-none border border-border text-sm font-medium transition-colors sm:size-14 sm:gap-0.5 sm:rounded-md sm:text-base",
+                "bg-background hover:bg-muted",
                 isClickPreviewable && activeStatusStyle.hoverRing,
                 isSaved && getServiceStatusStyle(recordedStatus).cell,
-                isNew && activeStatusStyle.cell,
+                isNew && getServiceStatusStyle(newStatus).cell,
                 (isPending || isNew) && "border-dashed",
                 isExpected &&
                 !isSelected &&
                 !isRemoved &&
-                "border-amber-500 bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100",
+                "ring-2 ring-inset ring-amber-500 bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100",
                 isRemoved &&
-                "border-rose-500 bg-rose-100 text-rose-950 line-through dark:bg-rose-950 dark:text-rose-100"
+                "ring-2 ring-inset ring-rose-500 bg-rose-100 text-rose-950 line-through dark:bg-rose-950 dark:text-rose-100"
               )}
               onClick={() =>
                 isRecorded && onStatusClick
@@ -199,14 +215,14 @@ export function ServiceCalendar({
             >
               <span>{day.dayNumber}</span>
               {isSaved && (recordedStatus.toLowerCase() !== "attended" || isPending) ? (
-                <span className="text-[9px] leading-none font-normal uppercase">
+                <span className="text-[7px] leading-none font-normal uppercase sm:text-[9px]">
                   {recordedStatus}
                   {isPending ? "*" : ""}
                 </span>
               ) : null}
-              {isNew && activeStatus.toLowerCase() !== "attended" ? (
-                <span className="text-[9px] leading-none font-normal uppercase">
-                  {activeStatus}*
+              {isNew && newStatus.toLowerCase() !== "attended" ? (
+                <span className="text-[7px] leading-none font-normal uppercase sm:text-[9px]">
+                  {newStatus}*
                 </span>
               ) : null}
             </button>

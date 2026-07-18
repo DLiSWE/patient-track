@@ -109,27 +109,6 @@ export function getExpectedServiceDatesForMonth(
     .map((day) => day.date);
 }
 
-export function getCalendarSelectionForMonth(month: string, recordedDates: Set<string>) {
-  return Array.from(recordedDates)
-    .filter((serviceDate) => serviceDate.startsWith(`${month}-`))
-    .sort();
-}
-
-export function getExpectedCalendarSelectionForMonth(
-  month: string,
-  serviceDays: string,
-  recordedDates: Set<string>
-) {
-  return Array.from(
-    new Set([
-      ...getExpectedServiceDatesForMonth(month, serviceDays, new Set()),
-      ...Array.from(recordedDates).filter((serviceDate) =>
-        serviceDate.startsWith(`${month}-`)
-      ),
-    ])
-  ).sort();
-}
-
 export function getMonthDateRange(month: string) {
   const [year, monthNumber] = month.split("-").map(Number);
   const monthIndex = monthNumber - 1;

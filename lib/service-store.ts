@@ -16,6 +16,7 @@ export const serviceStatusOptions = [
   { label: "Attended", value: "Attended" },
   { label: "Medical", value: "Medical" },
   { label: "Hold", value: "Hold" },
+  { label: "Vacation", value: "Vacation" },
 ] as const;
 
 export const defaultServiceStatus: string = serviceStatusOptions[0].value;

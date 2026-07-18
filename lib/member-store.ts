@@ -5,9 +5,13 @@ export type Member = {
   serviceDays: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt: string | null;
 };
 
-export type MemberFormValues = Omit<Member, "id" | "createdAt" | "updatedAt">;
+export type MemberFormValues = Omit<
+  Member,
+  "id" | "createdAt" | "updatedAt" | "archivedAt"
+>;
 
 export const emptyMemberForm: MemberFormValues = {
   displayName: "",
@@ -29,6 +33,7 @@ export type MemberRow = {
   service_days: string | null;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
 };
 
 const serviceDayTokens = [
@@ -49,6 +54,7 @@ export function mapMemberRow(row: MemberRow): Member {
     serviceDays: row.service_days ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    archivedAt: row.archived_at,
   };
 }
 
