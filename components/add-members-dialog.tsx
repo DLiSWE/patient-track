@@ -3,7 +3,11 @@
 import { FormEvent, useState } from "react";
 import { Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
 
-import { getProviderLabel, providerOptions } from "@/lib/member-store";
+import {
+  getProviderLabel,
+  normalizeServiceDays,
+  providerOptions,
+} from "@/lib/member-store";
 import { Field } from "@/components/form-field";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,11 +40,13 @@ function createEmptyRow(): BulkMemberRow {
 }
 
 export function AddMembersDialog({
+  initialRowCount = 1,
   isSaving,
   onOpenChange,
   onSubmit,
   open,
 }: {
+  initialRowCount?: number;
   isSaving: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (
@@ -48,10 +54,12 @@ export function AddMembersDialog({
   ) => Promise<boolean>;
   open: boolean;
 }) {
-  const [rows, setRows] = useState<BulkMemberRow[]>([createEmptyRow()]);
+  const [rows, setRows] = useState<BulkMemberRow[]>(() =>
+    createEmptyRows(initialRowCount)
+  );
 
   function resetState() {
-    setRows([createEmptyRow()]);
+    setRows(createEmptyRows(initialRowCount));
   }
 
   function addRow() {
@@ -70,7 +78,16 @@ export function AddMembersDialog({
     );
   }
 
-  const validRows = rows.filter((row) => row.displayName.trim());
+  const startedRows = rows.filter(
+    (row) => row.displayName.trim() || row.provider.trim() || row.serviceDays.trim()
+  );
+  const validRows = startedRows.filter(
+    (row) =>
+      row.displayName.trim() &&
+      row.provider.trim() &&
+      normalizeServiceDays(row.serviceDays)
+  );
+  const hasIncompleteRows = startedRows.length !== validRows.length;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -119,6 +136,10 @@ export function AddMembersDialog({
                   <Field label={`Member ${index + 1} name`} htmlFor={`bulk-name-${row.key}`}>
                     <Input
                       id={`bulk-name-${row.key}`}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      data-1p-ignore="true"
+                      data-lpignore="true"
                       placeholder="Last, First M."
                       value={row.displayName}
                       onChange={(event) =>
@@ -150,6 +171,10 @@ export function AddMembersDialog({
                   <Field label="Service days" htmlFor={`bulk-service-days-${row.key}`}>
                     <Input
                       id={`bulk-service-days-${row.key}`}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      data-1p-ignore="true"
+                      data-lpignore="true"
                       placeholder="MTWTHF"
                       value={row.serviceDays}
                       onChange={(event) =>
@@ -176,12 +201,20 @@ export function AddMembersDialog({
             <PlusIcon data-icon="inline-start" />
             Add another member
           </Button>
+          {hasIncompleteRows ? (
+            <p className="text-sm text-destructive">
+              Complete name, provider, and service days for each started row.
+            </p>
+          ) : null}
 
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" />}>
               Cancel
             </DialogClose>
-            <Button type="submit" disabled={isSaving || validRows.length === 0}>
+            <Button
+              type="submit"
+              disabled={isSaving || validRows.length === 0 || hasIncompleteRows}
+            >
               {isSaving ? (
                 <Loader2Icon data-icon="inline-start" />
               ) : (
@@ -194,4 +227,8 @@ export function AddMembersDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function createEmptyRows(count: number) {
+  return Array.from({ length: Math.max(1, Math.min(25, count)) }, createEmptyRow);
 }

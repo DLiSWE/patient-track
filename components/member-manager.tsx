@@ -24,12 +24,14 @@ import {
   ChevronRightIcon,
   ClipboardListIcon,
   EyeIcon,
+  KeyRoundIcon,
   Loader2Icon,
   LogOutIcon,
   MenuIcon,
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
+  ShieldCheckIcon,
   Trash2Icon,
   UsersIcon,
   XIcon,
@@ -37,7 +39,7 @@ import {
 
 import {
   Claim,
-  mapClaimRow,
+  fetchAllClaims,
 } from "@/lib/claim-store";
 import {
   Member,
@@ -45,6 +47,7 @@ import {
   emptyMemberForm,
   getProviderLabel,
   mapMemberRow,
+  normalizeServiceDays,
   providerOptions,
   toMemberInsert,
   toMemberUpdate,
@@ -56,6 +59,8 @@ import {
   ServiceEntryFormValues,
   createEmptyServiceEntryForm,
   defaultServiceStatus,
+  fetchAllServiceEntries,
+  fetchServiceEntriesInRange,
   getTodayDate,
   mapServiceEntryRow,
   serviceStatusOptions,
@@ -89,6 +94,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -126,6 +139,8 @@ type AuthForm = {
 };
 
 type ActiveView = "members" | "services" | "claims" | "summary" | "member";
+type DirectorySortField = "displayName" | "provider" | "updatedAt";
+type SortDirection = "asc" | "desc";
 
 type DateOverride = { action: "add"; status: string } | { action: "remove" };
 
@@ -135,6 +150,12 @@ type SecurityEvent = {
   attemptCount: number;
   createdAt: string;
   lockedUntil: string;
+};
+
+type MfaEnrollment = {
+  factorId: string;
+  qrCode: string;
+  secret: string;
 };
 
 const emptyAuthForm: AuthForm = {
@@ -151,6 +172,8 @@ const memberActivityPageSize = 10;
 const directoryPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
 const summaryAttendeesPageSize = 10;
+const mfaFriendlyName = "Sophia Members";
+const mfaFriendlyNamePrefix = "Sophia Members";
 const viewTitles: Record<ActiveView, string> = {
   members: "Members",
   services: "Services",
@@ -181,6 +204,8 @@ export function MemberManager() {
   const [updatedMembersPage, setUpdatedMembersPage] = useState(0);
   const [servicePage, setServicePage] = useState(0);
   const [servicePageSize, setServicePageSize] = useState(10);
+  const [serviceMemberQuery, setServiceMemberQuery] = useState("");
+  const [isServiceMemberPickerOpen, setIsServiceMemberPickerOpen] = useState(false);
   const [dateOverrides, setDateOverrides] = useState<Record<string, DateOverride>>({});
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>(
@@ -190,11 +215,23 @@ export function MemberManager() {
     string | null
   >(getStoredDismissedSecurityEventId);
   const [session, setSession] = useState<Session | null>(null);
+  const [isMfaChecking, setIsMfaChecking] = useState(false);
+  const [isMfaChallengeRequired, setIsMfaChallengeRequired] = useState(false);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaFactorId, setMfaFactorId] = useState("");
+  const [hasMfaFactor, setHasMfaFactor] = useState(false);
+  const [mfaEnrollment, setMfaEnrollment] = useState<MfaEnrollment | null>(null);
+  const [isMfaEnrollOpen, setIsMfaEnrollOpen] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("members");
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [directorySortField, setDirectorySortField] =
+    useState<DirectorySortField>("displayName");
+  const [directorySortDirection, setDirectorySortDirection] =
+    useState<SortDirection>("asc");
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(true);
   const [isDiscontinuedOpen, setIsDiscontinuedOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Member | null>(null);
@@ -205,6 +242,11 @@ export function MemberManager() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteAuthError, setDeleteAuthError] = useState<string | null>(null);
   const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
+  const [bulkAddRowCount, setBulkAddRowCount] = useState(3);
+  const [selectedServiceEntryIds, setSelectedServiceEntryIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [isBulkServiceDeleteOpen, setIsBulkServiceDeleteOpen] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
@@ -229,16 +271,26 @@ export function MemberManager() {
       return;
     }
 
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
+      if (data.session) {
+        await refreshMfaState();
+      }
       setIsLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       setSession(nextSession);
       if (!nextSession) {
         setMembers([]);
         setServiceEntries([]);
+        setClaims([]);
+        setIsMfaChallengeRequired(false);
+        setMfaFactorId("");
+        setMfaCode("");
+        setHasMfaFactor(false);
+      } else {
+        await refreshMfaState();
       }
     });
 
@@ -259,17 +311,39 @@ export function MemberManager() {
   const filteredMembers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    if (!normalizedQuery) {
-      return activeMembers;
-    }
+    const nextMembers = normalizedQuery
+      ? activeMembers.filter((member) =>
+        [member.displayName, member.provider, member.serviceDays]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery)
+      )
+      : activeMembers;
 
-    return members.filter((member) =>
-      [member.displayName, member.provider, member.serviceDays]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalizedQuery)
-    );
-  }, [activeMembers, members, query]);
+    return [...nextMembers].sort((left, right) => {
+      const direction = directorySortDirection === "asc" ? 1 : -1;
+
+      if (directorySortField === "updatedAt") {
+        return left.updatedAt.localeCompare(right.updatedAt) * direction;
+      }
+
+      const leftValue =
+        directorySortField === "provider"
+          ? getProviderLabel(left.provider || "")
+          : left.displayName;
+      const rightValue =
+        directorySortField === "provider"
+          ? getProviderLabel(right.provider || "")
+          : right.displayName;
+
+      return leftValue.localeCompare(rightValue) * direction;
+    });
+  }, [
+    activeMembers,
+    directorySortDirection,
+    directorySortField,
+    query,
+  ]);
   const directoryPageCount = Math.max(
     1,
     Math.ceil(filteredMembers.length / directoryPageSize)
@@ -315,6 +389,34 @@ export function MemberManager() {
   const selectedServiceMember = serviceForm.memberId
     ? memberById.get(serviceForm.memberId)
     : null;
+  const serviceEntryByMemberDate = useMemo(() => {
+    const entriesByMemberDate = new Map<string, ServiceEntry>();
+
+    for (const entry of serviceEntries) {
+      const key = getServiceEntryMemberDateKey(entry.memberId, entry.serviceDate);
+      const existingEntry = entriesByMemberDate.get(key);
+
+      if (!existingEntry || entry.createdAt >= existingEntry.createdAt) {
+        entriesByMemberDate.set(key, entry);
+      }
+    }
+
+    return entriesByMemberDate;
+  }, [serviceEntries]);
+  const filteredServiceMembers = useMemo(() => {
+    const normalizedQuery = serviceMemberQuery.trim().toLowerCase();
+
+    if (!normalizedQuery) {
+      return activeMembers;
+    }
+
+    return activeMembers.filter((member) =>
+      [member.displayName, member.provider, member.serviceDays]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery)
+    );
+  }, [activeMembers, serviceMemberQuery]);
 
   const todayServiceCount = useMemo(() => {
     const today = new Date().toLocaleDateString("en-CA");
@@ -327,23 +429,23 @@ export function MemberManager() {
     }
 
     return new Set(
-      serviceEntries
+      Array.from(serviceEntryByMemberDate.values())
         .filter((entry) => entry.memberId === serviceForm.memberId)
         .map((entry) => entry.serviceDate)
     );
-  }, [serviceEntries, serviceForm.memberId]);
+  }, [serviceEntryByMemberDate, serviceForm.memberId]);
 
   const recordedServiceEntriesForMemberMonth = useMemo(() => {
     if (!serviceForm.memberId) {
       return [];
     }
 
-    return serviceEntries.filter(
+    return Array.from(serviceEntryByMemberDate.values()).filter(
       (entry) =>
         entry.memberId === serviceForm.memberId &&
         entry.serviceDate.startsWith(`${calendarMonth}-`)
     );
-  }, [calendarMonth, serviceEntries, serviceForm.memberId]);
+  }, [calendarMonth, serviceEntryByMemberDate, serviceForm.memberId]);
 
   const recordedServiceDatesForMemberMonth = useMemo(
     () =>
@@ -368,13 +470,12 @@ export function MemberManager() {
     }
 
     return Object.entries(statusOverrides).flatMap(([serviceDate, status]) => {
-      const entry = serviceEntries.find(
-        (candidate) =>
-          candidate.memberId === serviceForm.memberId && candidate.serviceDate === serviceDate
+      const entry = serviceEntryByMemberDate.get(
+        getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)
       );
       return entry && entry.serviceLabel !== status ? [{ entry, status }] : [];
     });
-  }, [serviceEntries, serviceForm.memberId, statusOverrides]);
+  }, [serviceEntryByMemberDate, serviceForm.memberId, statusOverrides]);
 
   const pendingStatusDates = useMemo(
     () => new Set(pendingStatusChanges.map((change) => change.entry.serviceDate)),
@@ -435,14 +536,12 @@ export function MemberManager() {
     return Object.entries(dateOverrides)
       .filter(([, override]) => override.action === "remove")
       .flatMap(([serviceDate]) => {
-        const entry = serviceEntries.find(
-          (candidate) =>
-            candidate.memberId === serviceForm.memberId &&
-            candidate.serviceDate === serviceDate
+        const entry = serviceEntryByMemberDate.get(
+          getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)
         );
         return entry ? [entry] : [];
       });
-  }, [dateOverrides, serviceEntries, serviceForm.memberId]);
+  }, [dateOverrides, serviceEntryByMemberDate, serviceForm.memberId]);
 
   const effectiveSelectedDatesForMonth = useMemo(() => {
     const dates = new Set<string>();
@@ -489,6 +588,13 @@ export function MemberManager() {
     safeServicePage * servicePageSize,
     safeServicePage * servicePageSize + servicePageSize
   );
+  const selectedServiceEntries = useMemo(
+    () => serviceEntries.filter((entry) => selectedServiceEntryIds.has(entry.id)),
+    [selectedServiceEntryIds, serviceEntries]
+  );
+  const areAllVisibleServicesSelected =
+    visibleServiceEntries.length > 0 &&
+    visibleServiceEntries.every((entry) => selectedServiceEntryIds.has(entry.id));
   const summaryCalendarDays = useMemo(
     () => getCalendarDays(summaryMonth),
     [summaryMonth]
@@ -624,7 +730,42 @@ export function MemberManager() {
     toast.success(nextMessage);
   }
 
-  async function loadDashboard() {
+  async function refreshMfaState() {
+    if (!supabase) {
+      return false;
+    }
+
+    setIsMfaChecking(true);
+
+    const [aalResult, factorsResult] = await Promise.all([
+      supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+      supabase.auth.mfa.listFactors(),
+    ]);
+
+    if (aalResult.error || factorsResult.error) {
+      setMfaError(aalResult.error?.message || factorsResult.error?.message || null);
+      setIsMfaChecking(false);
+      return false;
+    }
+
+    const verifiedTotpFactors = factorsResult.data.totp.filter(
+      (factor) => factor.status === "verified"
+    );
+    const requiresChallenge =
+      aalResult.data.currentLevel === "aal1" &&
+      aalResult.data.nextLevel === "aal2" &&
+      verifiedTotpFactors.length > 0;
+
+    setHasMfaFactor(verifiedTotpFactors.length > 0);
+    setMfaFactorId(verifiedTotpFactors[0]?.id ?? "");
+    setIsMfaChallengeRequired(requiresChallenge);
+    setMfaError(null);
+    setIsMfaChecking(false);
+
+    return requiresChallenge;
+  }
+
+  async function loadDashboard(preferredServiceMemberId = serviceForm.memberId) {
     if (!supabase) {
       return;
     }
@@ -636,23 +777,10 @@ export function MemberManager() {
       .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
       .order("display_name", { ascending: true });
 
-    const servicesRequest = supabase
-      .from("service_entries")
-      .select("id, member_id, service_date, service_label, created_at")
-      .order("service_date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    const claimsRequest = supabase
-      .from("claims")
-      .select(
-        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
-      )
-      .order("service_date", { ascending: false });
-
     const [membersResult, servicesResult, claimsResult] = await Promise.all([
       membersRequest,
-      servicesRequest,
-      claimsRequest,
+      fetchAllServiceEntries(supabase),
+      fetchAllClaims(supabase),
     ]);
 
     if (membersResult.error) {
@@ -660,36 +788,36 @@ export function MemberManager() {
     } else {
       const nextMembers = membersResult.data.map(mapMemberRow);
       setMembers(nextMembers);
-      const nextMemberId = serviceForm.memberId || nextMembers[0]?.id || "";
+      const nextMemberId = preferredServiceMemberId || nextMembers[0]?.id || "";
       setServiceForm((currentForm) => ({
         ...currentForm,
-        memberId: currentForm.memberId || nextMemberId,
+        memberId: preferredServiceMemberId || currentForm.memberId || nextMemberId,
       }));
     }
 
     if (servicesResult.error) {
       showError(servicesResult.error.message);
     } else {
-      setServiceEntries(servicesResult.data.map(mapServiceEntryRow));
+      setServiceEntries(getCanonicalServiceEntries(servicesResult.data));
     }
 
     if (claimsResult.error) {
       setClaims([]);
     } else {
-      setClaims(claimsResult.data.map(mapClaimRow));
+      setClaims(claimsResult.data);
     }
 
     setIsLoading(false);
   }
 
   useEffect(() => {
-    if (session) {
+    if (session && hasMfaFactor && !isMfaChallengeRequired && !isMfaChecking) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       loadDashboard();
     }
     // The dashboard should load once per auth session. Month/member changes are local form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session]);
+  }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, session]);
 
   const loadSecurityEvents = useCallback(async () => {
     if (!supabase) {
@@ -721,7 +849,7 @@ export function MemberManager() {
   }, []);
 
   useEffect(() => {
-    if (!session) {
+    if (!session || !hasMfaFactor || isMfaChallengeRequired || isMfaChecking) {
       return;
     }
 
@@ -732,7 +860,13 @@ export function MemberManager() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [loadSecurityEvents, session]);
+  }, [
+    hasMfaFactor,
+    isMfaChallengeRequired,
+    isMfaChecking,
+    loadSecurityEvents,
+    session,
+  ]);
 
   function acknowledgeSecurityEvent() {
     if (!visibleSecurityEvent) {
@@ -802,8 +936,138 @@ export function MemberManager() {
     } else {
       clearStoredFailedSignInState();
       setFailedSignInState({ attempts: 0, lockedUntil: null });
+      await refreshMfaState();
       setSession(data.session);
       setAuthForm(emptyAuthForm);
+    }
+
+    setIsSaving(false);
+  }
+
+  async function startMfaEnrollment() {
+    if (!supabase) {
+      return;
+    }
+
+    setMfaError(null);
+    setIsSaving(true);
+
+    const factors = await supabase.auth.mfa.listFactors();
+
+    if (factors.error) {
+      setMfaError(factors.error.message);
+      showError(factors.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    for (const factor of factors.data.totp) {
+      const friendlyName = factor.friendly_name ?? "";
+
+      if (
+        friendlyName.startsWith(mfaFriendlyNamePrefix) &&
+        factor.status !== "verified"
+      ) {
+        await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      }
+    }
+
+    const enrollmentName = `${mfaFriendlyName} ${new Date()
+      .toISOString()
+      .replace(/[-:.TZ]/g, "")
+      .slice(0, 14)}`;
+    const enrollment = await supabase.auth.mfa.enroll({
+      factorType: "totp",
+      friendlyName: enrollmentName,
+    });
+
+    if (enrollment.error) {
+      const error = enrollment.error;
+      setMfaError(error.message);
+      showError(error.message);
+    } else {
+      setMfaEnrollment({
+        factorId: enrollment.data.id,
+        qrCode: enrollment.data.totp.qr_code,
+        secret: enrollment.data.totp.secret,
+      });
+      setMfaCode("");
+      setIsMfaEnrollOpen(true);
+    }
+
+    setIsSaving(false);
+  }
+
+  async function verifyMfaEnrollment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!supabase || !mfaEnrollment || !mfaCode.trim()) {
+      return;
+    }
+
+    setMfaError(null);
+    setIsSaving(true);
+
+    const challenge = await supabase.auth.mfa.challenge({
+      factorId: mfaEnrollment.factorId,
+    });
+
+    if (challenge.error) {
+      setMfaError(challenge.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const verify = await supabase.auth.mfa.verify({
+      factorId: mfaEnrollment.factorId,
+      challengeId: challenge.data.id,
+      code: mfaCode.trim(),
+    });
+
+    if (verify.error) {
+      setMfaError(verify.error.message);
+    } else {
+      setMfaEnrollment(null);
+      setIsMfaEnrollOpen(false);
+      setMfaCode("");
+      await refreshMfaState();
+      showInfo("Two-factor authentication enabled.");
+    }
+
+    setIsSaving(false);
+  }
+
+  async function verifyMfaChallenge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!supabase || !mfaFactorId || !mfaCode.trim()) {
+      return;
+    }
+
+    setMfaError(null);
+    setIsSaving(true);
+
+    const challenge = await supabase.auth.mfa.challenge({ factorId: mfaFactorId });
+
+    if (challenge.error) {
+      setMfaError(challenge.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const verify = await supabase.auth.mfa.verify({
+      factorId: mfaFactorId,
+      challengeId: challenge.data.id,
+      code: mfaCode.trim(),
+    });
+
+    if (verify.error) {
+      setMfaError(verify.error.message);
+    } else {
+      setMfaCode("");
+      setIsMfaChallengeRequired(false);
+      await refreshMfaState();
+      showInfo("Two-factor check complete.");
     }
 
     setIsSaving(false);
@@ -823,7 +1087,12 @@ export function MemberManager() {
   async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!supabase || !serviceForm.memberId) {
+    if (!supabase) {
+      return;
+    }
+
+    if (!serviceForm.memberId) {
+      showError("Select a member before saving service dates.");
       return;
     }
 
@@ -853,19 +1122,17 @@ export function MemberManager() {
       datesToCreate.length > 0
         ? await supabase
           .from("service_entries")
-          .insert(
+          .upsert(
             datesToCreate.map(({ serviceDate, status }) =>
               toServiceEntryInsert({
                 memberId: serviceForm.memberId,
                 serviceDate,
                 serviceLabel: status,
               })
-            )
+            ),
+            { ignoreDuplicates: true, onConflict: "member_id,service_date" }
           )
-          .select("id, member_id, service_date, service_label, created_at")
-          .order("service_date", { ascending: false })
-          .order("created_at", { ascending: false })
-        : { data: [], error: null };
+        : { error: null };
 
     const updateResults = await Promise.all(
       statusChangesToApply.map(({ entry, status }) =>
@@ -887,24 +1154,46 @@ export function MemberManager() {
         "Service dates could not be saved."
       );
     } else {
-      const nextEntries = insertResult.data.map(mapServiceEntryRow);
       const updatedEntries = updateResults
         .map((result) => result.data)
         .filter((row): row is NonNullable<typeof row> => Boolean(row))
         .map(mapServiceEntryRow);
-      const updatedIds = new Set(updatedEntries.map((entry) => entry.id));
+      const monthRange = getMonthDateRange(calendarMonth);
+      const refreshedMonthResult = await fetchServiceEntriesInRange(
+        supabase,
+        monthRange.start,
+        monthRange.end
+      );
+
+      if (refreshedMonthResult.error) {
+        showError(refreshedMonthResult.error.message);
+        setIsSaving(false);
+        return;
+      }
+
+      const refreshedMemberMonthEntries = refreshedMonthResult.data.filter(
+        (entry) => entry.memberId === serviceForm.memberId
+      );
 
       setServiceEntries((currentEntries) =>
-        [
-          ...nextEntries,
+        getCanonicalServiceEntries([
+          ...currentEntries.filter((entry) => {
+            if (serviceIdsToDelete.includes(entry.id)) {
+              return false;
+            }
+
+            if (
+              entry.memberId === serviceForm.memberId &&
+              entry.serviceDate.startsWith(`${calendarMonth}-`)
+            ) {
+              return false;
+            }
+
+            return !updatedEntries.some((updatedEntry) => updatedEntry.id === entry.id);
+          }),
+          ...refreshedMemberMonthEntries,
           ...updatedEntries,
-          ...currentEntries.filter(
-            (entry) => !serviceIdsToDelete.includes(entry.id) && !updatedIds.has(entry.id)
-          ),
-        ].sort((left, right) => {
-          const dateSort = right.serviceDate.localeCompare(left.serviceDate);
-          return dateSort || right.createdAt.localeCompare(left.createdAt);
-        })
+        ])
       );
       setDateOverrides((currentOverrides) => {
         const nextOverrides = { ...currentOverrides };
@@ -935,16 +1224,32 @@ export function MemberManager() {
         ? getWeekDateRange(today)
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
 
+    setIsSaving(true);
+
+    const existingResult = await fetchServiceEntriesInRange(supabase, start, end);
+
+    if (existingResult.error) {
+      showError(existingResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const freshExistingEntries = existingResult.data;
     const recordedDatesByMember = new Map<string, Set<string>>();
-    for (const entry of serviceEntries) {
+    for (const entry of freshExistingEntries) {
       const recordedDates = recordedDatesByMember.get(entry.memberId) ?? new Set<string>();
       recordedDates.add(entry.serviceDate);
       recordedDatesByMember.set(entry.memberId, recordedDates);
     }
 
-    const inserts = activeMembers.flatMap((member) => {
+    const insertsByMemberDate = new Map<
+      string,
+      ReturnType<typeof toServiceEntryInsert>
+    >();
+
+    for (const member of activeMembers) {
       if (!member.serviceDays) {
-        return [];
+        continue;
       }
 
       const expectedDates = getExpectedServiceDatesInRange(
@@ -954,28 +1259,32 @@ export function MemberManager() {
         recordedDatesByMember.get(member.id) ?? new Set<string>()
       );
 
-      return expectedDates.map((serviceDate) =>
-        toServiceEntryInsert({
-          memberId: member.id,
-          serviceDate,
-          serviceLabel: defaultServiceStatus,
-        })
-      );
-    });
+      for (const serviceDate of expectedDates) {
+        insertsByMemberDate.set(
+          `${member.id}:${serviceDate}`,
+          toServiceEntryInsert({
+            memberId: member.id,
+            serviceDate,
+            serviceLabel: defaultServiceStatus,
+          })
+        );
+      }
+    }
+
+    const inserts = Array.from(insertsByMemberDate.values());
 
     if (inserts.length === 0) {
       showInfo("Everyone is already up to date for this range.");
+      setIsSaving(false);
       return;
     }
 
-    setIsSaving(true);
-
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("service_entries")
-      .insert(inserts)
-      .select("id, member_id, service_date, service_label, created_at")
-      .order("service_date", { ascending: false })
-      .order("created_at", { ascending: false });
+      .upsert(inserts, {
+        ignoreDuplicates: true,
+        onConflict: "member_id,service_date",
+      });
 
     if (error) {
       showError(error.message);
@@ -983,16 +1292,28 @@ export function MemberManager() {
       return;
     }
 
-    const nextEntries = data.map(mapServiceEntryRow);
+    const refreshedRangeResult = await fetchServiceEntriesInRange(supabase, start, end);
+
+    if (refreshedRangeResult.error) {
+      showError(refreshedRangeResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const refreshedRangeEntries = refreshedRangeResult.data;
+    const freshExistingKeys = new Set(
+      freshExistingEntries.map((entry) => `${entry.memberId}:${entry.serviceDate}`)
+    );
+    const addedCount = refreshedRangeEntries.filter(
+      (entry) => !freshExistingKeys.has(`${entry.memberId}:${entry.serviceDate}`)
+    ).length;
+
     setServiceEntries((currentEntries) =>
-      [...nextEntries, ...currentEntries].sort((left, right) => {
-        const dateSort = right.serviceDate.localeCompare(left.serviceDate);
-        return dateSort || right.createdAt.localeCompare(left.createdAt);
-      })
+      getCanonicalServiceEntries([...currentEntries, ...refreshedRangeEntries])
     );
 
     showInfo(
-      `Added ${nextEntries.length} service ${nextEntries.length === 1 ? "entry" : "entries"}.`
+      `Added ${addedCount} service ${addedCount === 1 ? "entry" : "entries"}.`
     );
     setIsSaving(false);
   }
@@ -1019,10 +1340,43 @@ export function MemberManager() {
 
     const updatedEntry = mapServiceEntryRow(data);
     setServiceEntries((currentEntries) =>
-      currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry))
+      getCanonicalServiceEntries([
+        ...currentEntries.filter((entry) => entry.id !== updatedEntry.id),
+        updatedEntry,
+      ])
     );
     setIsSaving(false);
     return true;
+  }
+
+  async function refreshServiceCalendarMonth(memberId: string, month: string) {
+    if (!supabase || !memberId) {
+      return;
+    }
+
+    const monthRange = getMonthDateRange(month);
+    const result = await fetchServiceEntriesInRange(
+      supabase,
+      monthRange.start,
+      monthRange.end
+    );
+
+    if (result.error) {
+      showError(result.error.message);
+      return;
+    }
+
+    const memberMonthEntries = result.data.filter((entry) => entry.memberId === memberId);
+
+    setServiceEntries((currentEntries) =>
+      getCanonicalServiceEntries([
+        ...currentEntries.filter(
+          (entry) =>
+            !(entry.memberId === memberId && entry.serviceDate.startsWith(`${month}-`))
+        ),
+        ...memberMonthEntries,
+      ])
+    );
   }
 
   function handleStatusOverrideToggle(serviceDate: string) {
@@ -1080,12 +1434,20 @@ export function MemberManager() {
       ...currentForm,
       memberId,
     }));
+    setServiceMemberQuery(memberById.get(memberId)?.displayName ?? "");
+    setIsServiceMemberPickerOpen(false);
     setDateOverrides({});
     setStatusOverrides({});
+    void refreshServiceCalendarMonth(memberId, calendarMonth);
   }
 
   function handleCalendarMonthChange(month: string) {
     setCalendarMonth(month);
+    setDateOverrides({});
+    setStatusOverrides({});
+    if (serviceForm.memberId) {
+      void refreshServiceCalendarMonth(serviceForm.memberId, month);
+    }
   }
 
   function handleSummaryMonthChange(month: string) {
@@ -1209,8 +1571,24 @@ export function MemberManager() {
       provider: form.provider.trim(),
       serviceDays: form.serviceDays.trim(),
     };
+    const normalizedServiceDays = normalizeServiceDays(cleanedForm.serviceDays);
+    const memberPayload = {
+      ...cleanedForm,
+      serviceDays: normalizedServiceDays,
+    };
 
     if (!cleanedForm.displayName) {
+      showError("Member name is required.");
+      return;
+    }
+
+    if (!cleanedForm.provider) {
+      showError("Provider is required.");
+      return;
+    }
+
+    if (!normalizedServiceDays) {
+      showError("Service days are required. Use a format like MTWTHF.");
       return;
     }
 
@@ -1219,7 +1597,7 @@ export function MemberManager() {
     if (editingId) {
       const { data, error } = await supabase
         .from("members")
-        .update(toMemberUpdate(cleanedForm))
+        .update(toMemberUpdate(memberPayload))
         .eq("id", editingId)
         .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
         .single();
@@ -1233,12 +1611,24 @@ export function MemberManager() {
             member.id === editingId ? updatedMember : member
           )
         );
+        if (serviceForm.memberId === updatedMember.id) {
+          setServiceMemberQuery(updatedMember.displayName);
+          setDateOverrides({});
+          setStatusOverrides({});
+        }
         resetForm();
+        await loadDashboard(updatedMember.id);
+        setServiceMemberQuery(updatedMember.displayName);
+        setIsServiceMemberPickerOpen(false);
+        setDateOverrides({});
+        setStatusOverrides({});
+        await refreshServiceCalendarMonth(updatedMember.id, calendarMonth);
+        showInfo(`Updated ${updatedMember.displayName}.`);
       }
     } else {
       const { data, error } = await supabase
         .from("members")
-        .insert(toMemberInsert(cleanedForm))
+        .insert(toMemberInsert(memberPayload))
         .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
         .single();
 
@@ -1256,6 +1646,8 @@ export function MemberManager() {
           memberId: currentForm.memberId || nextMember.id,
         }));
         resetForm();
+        await loadDashboard();
+        showInfo(`Added ${nextMember.displayName}.`);
       }
     }
 
@@ -1269,9 +1661,24 @@ export function MemberManager() {
       return false;
     }
 
-    const inserts = rows.map(toMemberInsert).filter((row) => row.display_name);
+    const incompleteRow = rows.find(
+      (row) =>
+        !row.displayName.trim() ||
+        !row.provider.trim() ||
+        !normalizeServiceDays(row.serviceDays)
+    );
+
+    if (incompleteRow) {
+      showError("Each submitted member needs a name, provider, and service days.");
+      return false;
+    }
+
+    const inserts = rows.map(toMemberInsert).filter(
+      (row) => row.display_name && row.provider && row.service_days
+    );
 
     if (inserts.length === 0) {
+      showError("Add at least one complete member.");
       return false;
     }
 
@@ -1490,8 +1897,69 @@ export function MemberManager() {
       setServiceEntries((currentEntries) =>
         currentEntries.filter((entry) => entry.id !== serviceDeleteTarget.id)
       );
+      setSelectedServiceEntryIds((currentIds) => {
+        const nextIds = new Set(currentIds);
+        nextIds.delete(serviceDeleteTarget.id);
+        return nextIds;
+      });
       showInfo("Deleted service date.");
       setServiceDeleteTarget(null);
+    }
+
+    setIsSaving(false);
+  }
+
+  function toggleServiceEntrySelection(entryId: string) {
+    setSelectedServiceEntryIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (nextIds.has(entryId)) {
+        nextIds.delete(entryId);
+      } else {
+        nextIds.add(entryId);
+      }
+
+      return nextIds;
+    });
+  }
+
+  function toggleVisibleServiceSelection() {
+    setSelectedServiceEntryIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (areAllVisibleServicesSelected) {
+        for (const entry of visibleServiceEntries) {
+          nextIds.delete(entry.id);
+        }
+      } else {
+        for (const entry of visibleServiceEntries) {
+          nextIds.add(entry.id);
+        }
+      }
+
+      return nextIds;
+    });
+  }
+
+  async function confirmBulkDeleteServices() {
+    if (!supabase || selectedServiceEntries.length === 0) {
+      return;
+    }
+
+    const idsToDelete = selectedServiceEntries.map((entry) => entry.id);
+    setIsSaving(true);
+
+    const { error } = await supabase.from("service_entries").delete().in("id", idsToDelete);
+
+    if (error) {
+      showError(error.message);
+    } else {
+      setServiceEntries((currentEntries) =>
+        currentEntries.filter((entry) => !selectedServiceEntryIds.has(entry.id))
+      );
+      setSelectedServiceEntryIds(new Set());
+      setIsBulkServiceDeleteOpen(false);
+      showInfo(`Deleted ${idsToDelete.length} service date${idsToDelete.length === 1 ? "" : "s"}.`);
     }
 
     setIsSaving(false);
@@ -1580,6 +2048,165 @@ export function MemberManager() {
     );
   }
 
+  const mfaQrCodeImageUrl = mfaEnrollment
+    ? getMfaQrCodeImageUrl(mfaEnrollment.qrCode)
+    : "";
+
+  if (isMfaChecking || isMfaChallengeRequired || !hasMfaFactor) {
+    const isMfaSetupRequired = !isMfaChecking && !isMfaChallengeRequired && !hasMfaFactor;
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
+        <ThemeToggle className="absolute top-4 right-4" />
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>
+              {isMfaSetupRequired ? "Set up two-factor auth" : "Two-factor check"}
+            </CardTitle>
+            <CardDescription>
+              {isMfaSetupRequired
+                ? "Add an authenticator app before opening the dashboard."
+                : "Enter the 6-digit code from your authenticator app."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isMfaChecking ? (
+              <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2Icon data-icon="inline-start" />
+                Checking account security
+              </div>
+            ) : isMfaSetupRequired ? (
+              mfaEnrollment ? (
+                <form className="flex flex-col gap-4" onSubmit={verifyMfaEnrollment}>
+                  <div className="flex aspect-square items-center justify-center rounded-lg border bg-white p-5">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      alt="Authenticator QR code"
+                      className="size-full max-h-64 max-w-64 object-contain"
+                      src={mfaQrCodeImageUrl}
+                    />
+                  </div>
+                  <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+                    <p className="font-medium">Manual setup key</p>
+                    <code className="mt-1 block break-all text-muted-foreground">
+                      {mfaEnrollment.secret}
+                    </code>
+                  </div>
+                  <Field label="Authenticator code" htmlFor="mfa-required-code">
+                    <Input
+                      id="mfa-required-code"
+                      autoComplete="one-time-code"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={mfaCode}
+                      onChange={(event) =>
+                        setMfaCode(event.target.value.replace(/\D/g, ""))
+                      }
+                      required
+                    />
+                  </Field>
+                  {mfaError ? (
+                    <p className="text-sm text-destructive">{mfaError}</p>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isSaving}
+                      onClick={handleSignOut}
+                    >
+                      Sign out
+                    </Button>
+                    <Button
+                      type="submit"
+                      className="flex-1"
+                      disabled={isSaving || mfaCode.length < 6}
+                    >
+                      {isSaving ? <Loader2Icon data-icon="inline-start" /> : null}
+                      Enable 2FA
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  <Alert>
+                    <ShieldCheckIcon data-icon="inline-start" />
+                    <AlertTitle>Required for access</AlertTitle>
+                    <AlertDescription>
+                      Once MFA policies are active, the dashboard only opens after a
+                      verified authenticator code.
+                    </AlertDescription>
+                  </Alert>
+                  {mfaError ? (
+                    <p className="text-sm text-destructive">{mfaError}</p>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isSaving}
+                      onClick={handleSignOut}
+                    >
+                      Sign out
+                    </Button>
+                    <Button
+                      type="button"
+                      className="flex-1"
+                      disabled={isSaving}
+                      onClick={startMfaEnrollment}
+                    >
+                      {isSaving ? (
+                        <Loader2Icon data-icon="inline-start" />
+                      ) : (
+                        <KeyRoundIcon data-icon="inline-start" />
+                      )}
+                      Set up 2FA
+                    </Button>
+                  </div>
+                </div>
+              )
+            ) : (
+              <form className="flex flex-col gap-4" onSubmit={verifyMfaChallenge}>
+                <Field label="Authenticator code" htmlFor="mfa-code">
+                  <Input
+                    id="mfa-code"
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={mfaCode}
+                    onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, ""))}
+                    required
+                  />
+                </Field>
+                {mfaError ? (
+                  <p className="text-sm text-destructive">{mfaError}</p>
+                ) : null}
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isSaving}
+                    onClick={handleSignOut}
+                  >
+                    Sign out
+                  </Button>
+                  <Button
+                    type="submit"
+                    className="flex-1"
+                    disabled={isSaving || mfaCode.length < 6}
+                  >
+                    {isSaving ? <Loader2Icon data-icon="inline-start" /> : null}
+                    Verify
+                  </Button>
+                </div>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="dashboard-shell min-h-screen lg:pl-80">
@@ -1627,22 +2254,82 @@ export function MemberManager() {
               </div>
             </div>
 
-            <Alert className="bg-sidebar-accent text-sidebar-accent-foreground">
-              <AlertCircleIcon data-icon="inline-start" />
-              <AlertTitle>Keep out</AlertTitle>
-              <AlertDescription className="text-sidebar-accent-foreground/70">
-                DOBs, insurance IDs, authorization numbers, claim notes, diagnoses.
+            <Alert className="border-sidebar-border/80 bg-sidebar-accent/55 text-sidebar-accent-foreground shadow-sm">
+              <AlertCircleIcon data-icon="inline-start" className="text-sidebar-foreground/70" />
+              <AlertTitle className="text-sm">Keep PHI lean</AlertTitle>
+              <AlertDescription className="text-xs leading-5 text-sidebar-accent-foreground/65">
+                Leave out DOBs, IDs, auths, claim notes, and diagnoses.
               </AlertDescription>
             </Alert>
 
+            <div
+              className={cn(
+                "rounded-lg border px-3 py-2.5 text-sidebar-accent-foreground shadow-sm",
+                hasMfaFactor
+                  ? "border-emerald-400/30 bg-emerald-400/10"
+                  : "bg-sidebar-accent/55"
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      "flex size-8 shrink-0 items-center justify-center rounded-md border",
+                      hasMfaFactor
+                        ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-200"
+                        : "border-sidebar-border bg-sidebar-accent text-sidebar-foreground/70"
+                    )}
+                  >
+                    <ShieldCheckIcon className="size-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">
+                      {hasMfaFactor ? "2FA On" : "2FA Off"}
+                    </p>
+                    <p className="truncate text-xs text-sidebar-accent-foreground/65">
+                      {hasMfaFactor ? "Authenticator protected" : "Set up before enforcing"}
+                    </p>
+                  </div>
+                </div>
+                <Badge
+                  className={cn(
+                    "shrink-0 border",
+                    hasMfaFactor
+                      ? "border-emerald-300/30 bg-emerald-300/15 text-emerald-100"
+                      : "border-sidebar-border bg-transparent text-sidebar-foreground/70"
+                  )}
+                  variant="outline"
+                >
+                  {hasMfaFactor ? "Protected" : "Setup"}
+                </Badge>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className={cn(
+                  "mt-2 h-7 w-full border-sidebar-border bg-transparent text-xs text-sidebar-foreground hover:bg-sidebar-accent/80",
+                  hasMfaFactor &&
+                    "border-emerald-300/30 text-emerald-50 hover:bg-emerald-300/10"
+                )}
+                disabled={isSaving}
+                onClick={startMfaEnrollment}
+              >
+                <KeyRoundIcon data-icon="inline-start" />
+                {hasMfaFactor ? "Add backup factor" : "Set up 2FA"}
+              </Button>
+            </div>
+
             {visibleSecurityEvent ? (
-              <Alert className="border-amber-400/30 bg-amber-400/10 text-sidebar-foreground">
-                <BellIcon data-icon="inline-start" />
-                <AlertTitle className="flex items-center justify-between gap-2">
+              <Alert className="border-amber-300/35 bg-amber-300/10 text-sidebar-foreground shadow-sm ring-1 ring-amber-300/10">
+                <BellIcon data-icon="inline-start" className="text-amber-200" />
+                <AlertTitle className="flex items-center justify-between gap-2 text-sm text-amber-50">
                   Login warning
-                  <Badge variant="secondary">1 alert</Badge>
+                  <Badge className="bg-amber-200/15 text-amber-50" variant="outline">
+                    1 alert
+                  </Badge>
                 </AlertTitle>
-                <AlertDescription className="text-sidebar-foreground/75">
+                <AlertDescription className="text-xs leading-5 text-sidebar-foreground/75">
                   {visibleSecurityEvent.attemptedEmail || "Unknown email"} hit{" "}
                   {visibleSecurityEvent.attemptCount} failed attempts at{" "}
                   {latestSecurityEventTime}.
@@ -1651,7 +2338,7 @@ export function MemberManager() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="mt-3 border-amber-400/40 bg-transparent text-sidebar-foreground hover:bg-amber-400/15"
+                  className="mt-3 h-8 border-amber-300/35 bg-transparent text-amber-50 hover:bg-amber-300/15"
                   onClick={acknowledgeSecurityEvent}
                 >
                   Acknowledge
@@ -1757,13 +2444,13 @@ export function MemberManager() {
                       ? selectedMember
                         ? `${selectedMember.displayName} profile`
                         : "Select a member"
-                    : activeView === "summary"
-                      ? `${summaryStats.totalServices} services this month`
-                      : activeView === "services"
-                        ? `${serviceEntries.length} recorded`
-                        : activeView === "claims"
-                          ? "Claim submission tracking"
-                          : `${activeMembers.length} total`}
+                      : activeView === "summary"
+                        ? `${summaryStats.totalServices} services this month`
+                        : activeView === "services"
+                          ? `${serviceEntries.length} recorded`
+                          : activeView === "claims"
+                            ? "Claim submission tracking"
+                            : `${activeMembers.length} total`}
                 </p>
               </div>
             </header>
@@ -1868,27 +2555,105 @@ export function MemberManager() {
                       onSubmit={handleServiceSubmit}
                     >
                       <Field label="Member" htmlFor="service-member">
-                        <Select
-                          value={serviceForm.memberId}
-                          onValueChange={(value) =>
-                            handleServiceMemberChange(value ?? "")
-                          }
-                        >
-                          <SelectTrigger id="service-member" className="w-full">
-                            <span className="truncate text-left">
-                              {selectedServiceMember?.displayName ?? "Select member"}
-                            </span>
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectGroup>
-                              {activeMembers.map((member) => (
-                                <SelectItem key={member.id} value={member.id}>
-                                  {member.displayName}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
+                        <div className="relative">
+                          <Input
+                            id="service-member"
+                            autoComplete="off"
+                            className="pr-9"
+                            placeholder={
+                              selectedServiceMember?.displayName ?? "Search member name"
+                            }
+                            value={serviceMemberQuery}
+                            onBlur={() => {
+                              window.setTimeout(
+                                () => setIsServiceMemberPickerOpen(false),
+                                120
+                              );
+                            }}
+                            onChange={(event) => {
+                              const nextQuery = event.target.value;
+                              setServiceMemberQuery(nextQuery);
+                              setIsServiceMemberPickerOpen(true);
+                              if (
+                                serviceForm.memberId &&
+                                nextQuery !== selectedServiceMember?.displayName
+                              ) {
+                                setServiceForm((currentForm) => ({
+                                  ...currentForm,
+                                  memberId: "",
+                                }));
+                                setDateOverrides({});
+                                setStatusOverrides({});
+                              }
+                            }}
+                            onFocus={() => setIsServiceMemberPickerOpen(true)}
+                            onKeyDown={(event) => {
+                              if (
+                                event.key === "Enter" &&
+                                filteredServiceMembers[0]
+                              ) {
+                                event.preventDefault();
+                                handleServiceMemberChange(filteredServiceMembers[0].id);
+                              } else if (event.key === "Escape") {
+                                setIsServiceMemberPickerOpen(false);
+                              }
+                            }}
+                          />
+                          {serviceMemberQuery || serviceForm.memberId ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label="Clear selected member"
+                              className="absolute top-0.5 right-1 size-7"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setServiceForm((currentForm) => ({
+                                  ...currentForm,
+                                  memberId: "",
+                                }));
+                                setServiceMemberQuery("");
+                                setIsServiceMemberPickerOpen(true);
+                                setDateOverrides({});
+                                setStatusOverrides({});
+                              }}
+                            >
+                              <XIcon />
+                            </Button>
+                          ) : null}
+                          {isServiceMemberPickerOpen &&
+                          (serviceMemberQuery.trim() || !serviceForm.memberId) ? (
+                            <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border bg-popover text-popover-foreground shadow-md dark:border-white/10">
+                              {filteredServiceMembers.length === 0 ? (
+                                <div className="px-3 py-2 text-sm text-muted-foreground">
+                                  No matching members
+                                </div>
+                              ) : (
+                                filteredServiceMembers.map((member) => (
+                                  <button
+                                    key={member.id}
+                                    type="button"
+                                    className={cn(
+                                      "flex w-full items-center justify-between gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted dark:border-white/10 dark:hover:bg-white/[0.06]",
+                                      serviceForm.memberId === member.id && "bg-muted"
+                                    )}
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onClick={() => handleServiceMemberChange(member.id)}
+                                  >
+                                    <span className="truncate font-medium">
+                                      {member.displayName}
+                                    </span>
+                                    <span className="shrink-0 text-xs text-muted-foreground">
+                                      {member.provider
+                                        ? getProviderLabel(member.provider)
+                                        : member.serviceDays || "No days"}
+                                    </span>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
                       </Field>
 
                       <Field label="Status to apply on click" htmlFor="service-status">
@@ -1949,8 +2714,8 @@ export function MemberManager() {
                         />
                         <div className="flex min-h-8 flex-wrap gap-2">
                           {datesToCreateForMonth.length === 0 &&
-                          entriesToDeleteForMonth.length === 0 &&
-                          statusChangesForMonth.length === 0 ? (
+                            entriesToDeleteForMonth.length === 0 &&
+                            statusChangesForMonth.length === 0 ? (
                             <span className="text-sm text-muted-foreground">
                               No changes staged for this month
                             </span>
@@ -2017,6 +2782,7 @@ export function MemberManager() {
                           className="flex-1"
                           disabled={
                             isSaving ||
+                            !serviceForm.memberId ||
                             activeMembers.length === 0 ||
                             serviceChangeCount === 0
                           }
@@ -2039,7 +2805,17 @@ export function MemberManager() {
                     <CardDescription>
                       Latest service entries from the shared log.
                     </CardDescription>
-                    <CardAction>
+                    <CardAction className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={isSaving || selectedServiceEntries.length === 0}
+                        onClick={() => setIsBulkServiceDeleteOpen(true)}
+                      >
+                        <Trash2Icon data-icon="inline-start" />
+                        Delete selected ({selectedServiceEntries.length})
+                      </Button>
                       <Select
                         value={String(servicePageSize)}
                         onValueChange={(value) => {
@@ -2079,6 +2855,15 @@ export function MemberManager() {
                       <Table>
                         <TableHeader>
                           <TableRow>
+                            <TableHead className="w-10">
+                              <input
+                                aria-label="Select visible service entries"
+                                checked={areAllVisibleServicesSelected}
+                                className="size-4 rounded border-input accent-primary"
+                                type="checkbox"
+                                onChange={toggleVisibleServiceSelection}
+                              />
+                            </TableHead>
                             <TableHead>Member</TableHead>
                             <TableHead>Service</TableHead>
                             <TableHead className="w-28 text-right">Date</TableHead>
@@ -2090,6 +2875,15 @@ export function MemberManager() {
                             const member = memberById.get(entry.memberId);
                             return (
                               <TableRow key={entry.id}>
+                                <TableCell>
+                                  <input
+                                    aria-label={`Select service for ${member?.displayName ?? "unknown member"} on ${entry.serviceDate}`}
+                                    checked={selectedServiceEntryIds.has(entry.id)}
+                                    className="size-4 rounded border-input accent-primary"
+                                    type="checkbox"
+                                    onChange={() => toggleServiceEntrySelection(entry.id)}
+                                  />
+                                </TableCell>
                                 <TableCell className="font-medium">
                                   {member?.displayName ?? "Unknown member"}
                                 </TableCell>
@@ -2203,19 +2997,68 @@ export function MemberManager() {
                   </CardHeader>
                   {isDirectoryOpen ? (
                     <CardContent className="flex flex-col gap-4">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <Input
-                          aria-label="Search members"
-                          className="sm:w-80"
-                          placeholder="Search for name"
-                          value={query}
-                          onChange={(event) => {
-                            setQuery(event.target.value);
-                            setDirectoryPage(0);
-                          }}
-                        />
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                          <Input
+                            aria-label="Search members"
+                            className="sm:w-72"
+                            placeholder="Search for name"
+                            value={query}
+                            onChange={(event) => {
+                              setQuery(event.target.value);
+                              setDirectoryPage(0);
+                            }}
+                          />
+                          <div className="grid min-w-0 grid-cols-2 gap-2 sm:w-[22rem]">
+                            <Select
+                              value={directorySortField}
+                              onValueChange={(value) => {
+                                setDirectorySortField(value as DirectorySortField);
+                                setDirectoryPage(0);
+                              }}
+                            >
+                              <SelectTrigger className="w-full">
+                                <span className="truncate text-left">
+                                  {directorySortField === "displayName"
+                                    ? "Member name"
+                                    : directorySortField === "provider"
+                                      ? "Provider"
+                                      : "Updated date"}
+                                </span>
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="displayName">
+                                    Member name
+                                  </SelectItem>
+                                  <SelectItem value="provider">Provider</SelectItem>
+                                  <SelectItem value="updatedAt">Updated date</SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={directorySortDirection}
+                              onValueChange={(value) => {
+                                setDirectorySortDirection(value as SortDirection);
+                                setDirectoryPage(0);
+                              }}
+                            >
+                              <SelectTrigger className="w-full">
+                                <span className="truncate text-left">
+                                  {directorySortDirection === "asc" ? "Asc" : "Desc"}
+                                </span>
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="asc">Asc</SelectItem>
+                                  <SelectItem value="desc">Desc</SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
                         <p className="text-sm text-muted-foreground">
-                          {filteredMembers.length} shown
+                          {filteredMembers.length} found
                         </p>
                       </div>
                       {isLoading ? (
@@ -2371,15 +3214,33 @@ export function MemberManager() {
                             Cancel
                           </Button>
                         ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setIsBulkAddOpen(true)}
-                          >
-                            <UsersIcon data-icon="inline-start" />
-                            Add multiple
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              aria-label="Bulk add row count"
+                              className="h-8 w-16"
+                              min={1}
+                              max={25}
+                              type="number"
+                              value={bulkAddRowCount}
+                              onChange={(event) =>
+                                setBulkAddRowCount(
+                                  Math.max(
+                                    1,
+                                    Math.min(25, Number(event.target.value) || 1)
+                                  )
+                                )
+                              }
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setIsBulkAddOpen(true)}
+                            >
+                              <UsersIcon data-icon="inline-start" />
+                              Add multiple
+                            </Button>
+                          </div>
                         )}
                       </CardAction>
                     </CardHeader>
@@ -2413,6 +3274,7 @@ export function MemberManager() {
                             onValueChange={(value) =>
                               setForm({ ...form, provider: value ?? "" })
                             }
+                            required
                           >
                             <SelectTrigger id="provider" className="w-full">
                               <span className="truncate text-left">
@@ -2449,6 +3311,7 @@ export function MemberManager() {
                             onChange={(event) =>
                               setForm({ ...form, serviceDays: event.target.value })
                             }
+                            required
                           />
                         </Field>
 
@@ -2620,6 +3483,52 @@ export function MemberManager() {
       </AlertDialog>
 
       <AlertDialog
+        open={isBulkServiceDeleteOpen}
+        onOpenChange={setIsBulkServiceDeleteOpen}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete selected services?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes {selectedServiceEntries.length} selected service{" "}
+              {selectedServiceEntries.length === 1 ? "entry" : "entries"}. Member records
+              stay active.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-48 overflow-y-auto rounded-lg border bg-muted/30 p-3 text-sm">
+            {selectedServiceEntries.slice(0, 8).map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center justify-between gap-3 py-1"
+              >
+                <span className="truncate">
+                  {memberById.get(entry.memberId)?.displayName ?? "Unknown member"}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString()}
+                </span>
+              </div>
+            ))}
+            {selectedServiceEntries.length > 8 ? (
+              <p className="pt-2 text-xs text-muted-foreground">
+                + {selectedServiceEntries.length - 8} more
+              </p>
+            ) : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep services</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmBulkDeleteServices}
+              disabled={isSaving || selectedServiceEntries.length === 0}
+            >
+              Delete selected
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
           if (!open) {
@@ -2677,11 +3586,80 @@ export function MemberManager() {
       </AlertDialog>
 
       <AddMembersDialog
+        key={bulkAddRowCount}
+        initialRowCount={bulkAddRowCount}
         isSaving={isSaving}
         onOpenChange={setIsBulkAddOpen}
         onSubmit={handleBulkAddMembers}
         open={isBulkAddOpen}
       />
+
+      <Dialog
+        open={isMfaEnrollOpen}
+        onOpenChange={(open) => {
+          setIsMfaEnrollOpen(open);
+          if (!open) {
+            setMfaEnrollment(null);
+            setMfaCode("");
+            setMfaError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set up two-factor auth</DialogTitle>
+            <DialogDescription>
+              Scan the QR code with an authenticator app, then enter the 6-digit code.
+            </DialogDescription>
+          </DialogHeader>
+          {mfaEnrollment ? (
+            <form className="flex flex-col gap-4" onSubmit={verifyMfaEnrollment}>
+              <div className="flex aspect-square items-center justify-center rounded-lg border bg-white p-5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  alt="Authenticator QR code"
+                  className="size-full max-h-64 max-w-64 object-contain"
+                  src={mfaQrCodeImageUrl}
+                />
+              </div>
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+                <p className="font-medium">Manual setup key</p>
+                <code className="mt-1 block break-all text-muted-foreground">
+                  {mfaEnrollment.secret}
+                </code>
+              </div>
+              <Field label="Authenticator code" htmlFor="mfa-enroll-code">
+                <Input
+                  id="mfa-enroll-code"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={mfaCode}
+                  onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, ""))}
+                  required
+                />
+              </Field>
+              {mfaError ? (
+                <p className="text-sm text-destructive">{mfaError}</p>
+              ) : null}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isSaving}
+                  onClick={() => setIsMfaEnrollOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isSaving || mfaCode.length < 6}>
+                  {isSaving ? <Loader2Icon data-icon="inline-start" /> : null}
+                  Enable 2FA
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
@@ -2718,6 +3696,36 @@ function getStoredFailedSignInState(): FailedSignInState {
     clearStoredFailedSignInState();
     return { attempts: 0, lockedUntil: null };
   }
+}
+
+function getMfaQrCodeImageUrl(qrCode: string) {
+  if (qrCode.startsWith("data:image/")) {
+    return qrCode;
+  }
+
+  return `data:image/svg+xml;utf8,${encodeURIComponent(qrCode)}`;
+}
+
+function getServiceEntryMemberDateKey(memberId: string, serviceDate: string) {
+  return `${memberId}:${serviceDate}`;
+}
+
+function getCanonicalServiceEntries(entries: ServiceEntry[]) {
+  const entriesByMemberDate = new Map<string, ServiceEntry>();
+
+  for (const entry of entries) {
+    const key = getServiceEntryMemberDateKey(entry.memberId, entry.serviceDate);
+    const existingEntry = entriesByMemberDate.get(key);
+
+    if (!existingEntry || existingEntry.createdAt <= entry.createdAt) {
+      entriesByMemberDate.set(key, entry);
+    }
+  }
+
+  return Array.from(entriesByMemberDate.values()).sort((left, right) => {
+    const dateSort = right.serviceDate.localeCompare(left.serviceDate);
+    return dateSort || right.createdAt.localeCompare(left.createdAt);
+  });
 }
 
 function storeFailedSignInState(state: FailedSignInState) {

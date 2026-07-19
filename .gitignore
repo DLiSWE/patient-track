@@ -7,3 +7,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
+
+# AI assistant local files
+.agents/
+.codex/
+.claude/
+.cursor/
+.continue/
+.aider*
+*.code-workspace

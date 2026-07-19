@@ -156,14 +156,33 @@ function parseCompactServiceDays(value: string) {
   let remaining = value;
 
   while (remaining) {
-    const match = serviceDayTokens.find((day) => remaining.startsWith(day.code));
-
-    if (!match) {
+    if (remaining.startsWith("su")) {
+      days.push("su");
+      remaining = remaining.slice(2);
+    } else if (remaining.startsWith("th")) {
+      days.push("th");
+      remaining = remaining.slice(2);
+    } else if (remaining.startsWith("sa")) {
+      days.push("sa");
+      remaining = remaining.slice(2);
+    } else if (remaining.startsWith("m")) {
+      days.push("m");
+      remaining = remaining.slice(1);
+    } else if (remaining.startsWith("t")) {
+      days.push("t");
+      remaining = remaining.slice(1);
+    } else if (remaining.startsWith("w")) {
+      days.push("w");
+      remaining = remaining.slice(1);
+    } else if (remaining.startsWith("f")) {
+      days.push("f");
+      remaining = remaining.slice(1);
+    } else if (remaining.startsWith("s")) {
+      days.push("sa");
+      remaining = remaining.slice(1);
+    } else {
       return [];
     }
-
-    days.push(match.code);
-    remaining = remaining.slice(match.code.length);
   }
 
   return days;

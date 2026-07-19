@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 export type Claim = {
   id: string;
   memberId: string;
@@ -73,6 +75,10 @@ export type ClaimRow = {
   updated_at: string;
 };
 
+const claimSelectColumns =
+  "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at";
+const claimFetchPageSize = 1000;
+
 export function createEmptyClaimForm(memberId = "", serviceDate = ""): ClaimFormValues {
   return {
     memberId,
@@ -95,6 +101,30 @@ export function mapClaimRow(row: ClaimRow): Claim {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export async function fetchAllClaims(supabaseClient: SupabaseClient) {
+  const rows: ClaimRow[] = [];
+
+  for (let from = 0; ; from += claimFetchPageSize) {
+    const to = from + claimFetchPageSize - 1;
+    const { data, error } = await supabaseClient
+      .from("claims")
+      .select(claimSelectColumns)
+      .order("service_date", { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return { data: rows.map(mapClaimRow), error };
+    }
+
+    const nextRows = data ?? [];
+    rows.push(...nextRows);
+
+    if (nextRows.length < claimFetchPageSize) {
+      return { data: rows.map(mapClaimRow), error: null };
+    }
+  }
 }
 
 export function toClaimInsert(values: ClaimFormValues) {

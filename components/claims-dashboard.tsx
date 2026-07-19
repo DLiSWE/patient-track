@@ -21,6 +21,7 @@ import {
   claimStatusOptions,
   createEmptyClaimForm,
   defaultClaimStatus,
+  fetchAllClaims,
   getClaimStatusStyle,
   mapClaimRow,
   toClaimInsert,
@@ -110,17 +111,12 @@ export function ClaimsDashboard({
 
     setIsLoading(true);
 
-    const { data, error } = await supabase
-      .from("claims")
-      .select(
-        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
-      )
-      .order("service_date", { ascending: false });
+    const { data, error } = await fetchAllClaims(supabase);
 
     if (error) {
       toast.error(error.message);
     } else {
-      setClaims(data.map(mapClaimRow));
+      setClaims(data);
     }
 
     setIsLoading(false);
@@ -284,8 +280,25 @@ export function ClaimsDashboard({
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
 
     const activeMemberIds = new Set(members.map((member) => member.id));
+    setIsSaving(true);
+
+    const existingResult = await supabase
+      .from("claims")
+      .select(
+        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
+      )
+      .gte("service_date", start)
+      .lte("service_date", end);
+
+    if (existingResult.error) {
+      toast.error(existingResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const freshExistingClaims = existingResult.data.map(mapClaimRow);
     const existingClaimKeys = new Set(
-      claims.map((claim) => `${claim.memberId}:${claim.serviceDate}`)
+      freshExistingClaims.map((claim) => `${claim.memberId}:${claim.serviceDate}`)
     );
 
     const toCreate = serviceEntries.filter((entry) => {
@@ -306,11 +319,9 @@ export function ClaimsDashboard({
       return;
     }
 
-    setIsSaving(true);
-
     const { data, error } = await supabase
       .from("claims")
-      .insert(
+      .upsert(
         toCreate.map((entry) =>
           toClaimInsert({
             memberId: entry.memberId,
@@ -318,7 +329,8 @@ export function ClaimsDashboard({
             status: "Required",
             lastFailureReason: "",
           })
-        )
+        ),
+        { ignoreDuplicates: true, onConflict: "member_id,service_date" }
       )
       .select(
         "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
@@ -329,11 +341,18 @@ export function ClaimsDashboard({
       toast.error(error.message);
     } else {
       const newClaims = data.map(mapClaimRow);
-      setClaims((currentClaims) =>
-        [...newClaims, ...currentClaims].sort((left, right) =>
+      setClaims((currentClaims) => {
+        const claimsById = new Map(
+          [...currentClaims, ...freshExistingClaims, ...newClaims].map((claim) => [
+            claim.id,
+            claim,
+          ])
+        );
+
+        return Array.from(claimsById.values()).sort((left, right) =>
           right.serviceDate.localeCompare(left.serviceDate)
-        )
-      );
+        );
+      });
       toast.success(
         `Generated ${newClaims.length} required claim${newClaims.length === 1 ? "" : "s"}.`
       );

@@ -241,12 +241,15 @@ function parseCompactWeekdays(compact: string) {
     if (remaining.startsWith("su")) {
       weekdays.add(0);
       remaining = remaining.slice(2);
-    } else if (remaining.startsWith("m")) {
-      weekdays.add(1);
-      remaining = remaining.slice(1);
     } else if (remaining.startsWith("th")) {
       weekdays.add(4);
       remaining = remaining.slice(2);
+    } else if (remaining.startsWith("sa")) {
+      weekdays.add(6);
+      remaining = remaining.slice(2);
+    } else if (remaining.startsWith("m")) {
+      weekdays.add(1);
+      remaining = remaining.slice(1);
     } else if (remaining.startsWith("t")) {
       weekdays.add(2);
       remaining = remaining.slice(1);
@@ -256,9 +259,9 @@ function parseCompactWeekdays(compact: string) {
     } else if (remaining.startsWith("f")) {
       weekdays.add(5);
       remaining = remaining.slice(1);
-    } else if (remaining.startsWith("sa")) {
+    } else if (remaining.startsWith("s")) {
       weekdays.add(6);
-      remaining = remaining.slice(2);
+      remaining = remaining.slice(1);
     } else {
       return new Set<number>();
     }
