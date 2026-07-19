@@ -95,6 +95,7 @@ export function ClaimsDashboard({
   const [claims, setClaims] = useState<Claim[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -110,6 +111,7 @@ export function ClaimsDashboard({
     }
 
     setIsLoading(true);
+    setBusyMessage("Loading claims...");
 
     const { data, error } = await fetchAllClaims(supabase);
 
@@ -120,6 +122,7 @@ export function ClaimsDashboard({
     }
 
     setIsLoading(false);
+    setBusyMessage(null);
   }
 
   useEffect(() => {
@@ -198,6 +201,7 @@ export function ClaimsDashboard({
     }
 
     setIsSaving(true);
+    setBusyMessage(editingClaimId ? "Updating claim..." : "Adding claim...");
 
     if (editingClaimId) {
       const { data, error } = await supabase
@@ -243,6 +247,7 @@ export function ClaimsDashboard({
     }
 
     setIsSaving(false);
+    setBusyMessage(null);
   }
 
   async function confirmDeleteClaim() {
@@ -251,6 +256,7 @@ export function ClaimsDashboard({
     }
 
     setIsSaving(true);
+    setBusyMessage("Deleting claim...");
 
     const { error } = await supabase.from("claims").delete().eq("id", deleteTarget.id);
 
@@ -265,6 +271,7 @@ export function ClaimsDashboard({
     }
 
     setIsSaving(false);
+    setBusyMessage(null);
   }
 
   async function handleGenerateRequiredClaims(range: "week" | "monthToDate" | "month") {
@@ -281,6 +288,13 @@ export function ClaimsDashboard({
 
     const activeMemberIds = new Set(members.map((member) => member.id));
     setIsSaving(true);
+    setBusyMessage(
+      range === "week"
+        ? "Generating required claims for this week..."
+        : range === "monthToDate"
+          ? "Generating required claims through today..."
+          : "Generating required claims for the whole month..."
+    );
 
     const existingResult = await supabase
       .from("claims")
@@ -293,6 +307,7 @@ export function ClaimsDashboard({
     if (existingResult.error) {
       toast.error(existingResult.error.message);
       setIsSaving(false);
+      setBusyMessage(null);
       return;
     }
 
@@ -316,6 +331,8 @@ export function ClaimsDashboard({
 
     if (toCreate.length === 0) {
       toast.success("No new claims needed for this range.");
+      setIsSaving(false);
+      setBusyMessage(null);
       return;
     }
 
@@ -359,10 +376,13 @@ export function ClaimsDashboard({
     }
 
     setIsSaving(false);
+    setBusyMessage(null);
   }
 
   return (
     <div className="flex flex-col gap-5">
+      {busyMessage ? <LoadingStatus message={busyMessage} /> : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Generate required claims</CardTitle>
@@ -749,6 +769,24 @@ function StatCard({
         {label}
       </p>
       <p className="text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function LoadingStatus({ message }: { message: string }) {
+  return (
+    <div
+      className="overflow-hidden rounded-lg border bg-card/95 text-card-foreground shadow-sm"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-3 px-3 py-2 text-sm">
+        <Loader2Icon className="size-4 animate-spin text-primary" />
+        <span className="font-medium">{message}</span>
+      </div>
+      <div className="h-1 overflow-hidden bg-muted">
+        <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/70" />
+      </div>
     </div>
   );
 }

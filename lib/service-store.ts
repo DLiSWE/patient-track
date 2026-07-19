@@ -6,6 +6,7 @@ export type ServiceEntry = {
   serviceDate: string;
   serviceLabel: string;
   createdAt: string;
+  updatedAt: string;
 };
 
 export type ServiceEntryFormValues = {
@@ -29,9 +30,11 @@ export type ServiceEntryRow = {
   service_date: string;
   service_label: string;
   created_at: string;
+  updated_at: string;
 };
 
-const serviceEntrySelectColumns = "id, member_id, service_date, service_label, created_at";
+export const serviceEntrySelectColumns =
+  "id, member_id, service_date, service_label, created_at, updated_at";
 const serviceEntryFetchPageSize = 1000;
 
 export function getTodayDate() {
@@ -53,6 +56,7 @@ export function mapServiceEntryRow(row: ServiceEntryRow): ServiceEntry {
     serviceDate: row.service_date,
     serviceLabel: row.service_label,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

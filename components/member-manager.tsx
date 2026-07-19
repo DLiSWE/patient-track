@@ -63,6 +63,7 @@ import {
   fetchServiceEntriesInRange,
   getTodayDate,
   mapServiceEntryRow,
+  serviceEntrySelectColumns,
   serviceStatusOptions,
   toServiceEntryInsert,
 } from "@/lib/service-store";
@@ -250,6 +251,10 @@ export function MemberManager() {
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  const [calendarLoadingMessage, setCalendarLoadingMessage] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     if (!failedSignInState.lockedUntil) {
@@ -588,6 +593,15 @@ export function MemberManager() {
     safeServicePage * servicePageSize,
     safeServicePage * servicePageSize + servicePageSize
   );
+  const recentlyUpdatedServiceEntries = useMemo(
+    () =>
+      [...serviceEntries]
+        .sort((left, right) =>
+          getServiceEntryUpdatedAt(right).localeCompare(getServiceEntryUpdatedAt(left))
+        )
+        .slice(0, 5),
+    [serviceEntries]
+  );
   const selectedServiceEntries = useMemo(
     () => serviceEntries.filter((entry) => selectedServiceEntryIds.has(entry.id)),
     [selectedServiceEntryIds, serviceEntries]
@@ -771,6 +785,7 @@ export function MemberManager() {
     }
 
     setIsLoading(true);
+    setBusyMessage("Loading dashboard data...");
 
     const membersRequest = supabase
       .from("members")
@@ -904,6 +919,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Checking sign in...");
 
     const email = authForm.email.trim();
     const { data, error } = await supabase.auth.signInWithPassword({
@@ -951,6 +967,7 @@ export function MemberManager() {
 
     setMfaError(null);
     setIsSaving(true);
+    setBusyMessage("Preparing two-factor setup...");
 
     const factors = await supabase.auth.mfa.listFactors();
 
@@ -1007,6 +1024,7 @@ export function MemberManager() {
 
     setMfaError(null);
     setIsSaving(true);
+    setBusyMessage("Verifying two-factor code...");
 
     const challenge = await supabase.auth.mfa.challenge({
       factorId: mfaEnrollment.factorId,
@@ -1046,6 +1064,7 @@ export function MemberManager() {
 
     setMfaError(null);
     setIsSaving(true);
+    setBusyMessage("Checking two-factor code...");
 
     const challenge = await supabase.auth.mfa.challenge({ factorId: mfaFactorId });
 
@@ -1112,6 +1131,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Saving service calendar changes...");
 
     const deleteResult =
       serviceIdsToDelete.length > 0
@@ -1138,9 +1158,9 @@ export function MemberManager() {
       statusChangesToApply.map(({ entry, status }) =>
         supabaseClient
           .from("service_entries")
-          .update({ service_label: status })
+          .update({ service_label: status, updated_at: new Date().toISOString() })
           .eq("id", entry.id)
-          .select("id, member_id, service_date, service_label, created_at")
+          .select(serviceEntrySelectColumns)
           .single()
       )
     );
@@ -1225,6 +1245,13 @@ export function MemberManager() {
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
 
     setIsSaving(true);
+    setBusyMessage(
+      range === "week"
+        ? "Bulk filling this week's attendance..."
+        : range === "monthToDate"
+          ? "Bulk filling attendance through today..."
+          : "Bulk filling the whole month..."
+    );
 
     const existingResult = await fetchServiceEntriesInRange(supabase, start, end);
 
@@ -1324,12 +1351,13 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Updating service status...");
 
     const { data, error } = await supabase
       .from("service_entries")
-      .update({ service_label: newLabel })
+      .update({ service_label: newLabel, updated_at: new Date().toISOString() })
       .eq("id", entryId)
-      .select("id, member_id, service_date, service_label, created_at")
+      .select(serviceEntrySelectColumns)
       .single();
 
     if (error) {
@@ -1354,29 +1382,34 @@ export function MemberManager() {
       return;
     }
 
+    setCalendarLoadingMessage("Refreshing this member's calendar...");
     const monthRange = getMonthDateRange(month);
-    const result = await fetchServiceEntriesInRange(
-      supabase,
-      monthRange.start,
-      monthRange.end
-    );
+    try {
+      const result = await fetchServiceEntriesInRange(
+        supabase,
+        monthRange.start,
+        monthRange.end
+      );
 
-    if (result.error) {
-      showError(result.error.message);
-      return;
+      if (result.error) {
+        showError(result.error.message);
+        return;
+      }
+
+      const memberMonthEntries = result.data.filter((entry) => entry.memberId === memberId);
+
+      setServiceEntries((currentEntries) =>
+        getCanonicalServiceEntries([
+          ...currentEntries.filter(
+            (entry) =>
+              !(entry.memberId === memberId && entry.serviceDate.startsWith(`${month}-`))
+          ),
+          ...memberMonthEntries,
+        ])
+      );
+    } finally {
+      setCalendarLoadingMessage(null);
     }
-
-    const memberMonthEntries = result.data.filter((entry) => entry.memberId === memberId);
-
-    setServiceEntries((currentEntries) =>
-      getCanonicalServiceEntries([
-        ...currentEntries.filter(
-          (entry) =>
-            !(entry.memberId === memberId && entry.serviceDate.startsWith(`${month}-`))
-        ),
-        ...memberMonthEntries,
-      ])
-    );
   }
 
   function handleStatusOverrideToggle(serviceDate: string) {
@@ -1593,6 +1626,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage(editingId ? "Updating member..." : "Adding member...");
 
     if (editingId) {
       const { data, error } = await supabase
@@ -1683,6 +1717,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage(`Adding ${inserts.length} members...`);
 
     const { data, error } = await supabase
       .from("members")
@@ -1740,6 +1775,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Updating member status...");
 
     const { data, error } = await supabase
       .from("members")
@@ -1783,6 +1819,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Reinstating member...");
 
     const { data, error } = await supabase
       .from("members")
@@ -1825,6 +1862,7 @@ export function MemberManager() {
 
     setDeleteAuthError(null);
     setIsSaving(true);
+    setBusyMessage("Confirming password and deleting member...");
 
     const { error: authError } = await supabase.auth.signInWithPassword({
       email,
@@ -1885,6 +1923,7 @@ export function MemberManager() {
     }
 
     setIsSaving(true);
+    setBusyMessage("Deleting service date...");
 
     const { error } = await supabase
       .from("service_entries")
@@ -1948,6 +1987,7 @@ export function MemberManager() {
 
     const idsToDelete = selectedServiceEntries.map((entry) => entry.id);
     setIsSaving(true);
+    setBusyMessage(`Deleting ${idsToDelete.length} service dates...`);
 
     const { error } = await supabase.from("service_entries").delete().in("id", idsToDelete);
 
@@ -2207,6 +2247,11 @@ export function MemberManager() {
     );
   }
 
+  const activeBusyMessage =
+    isLoading || isSaving
+      ? busyMessage ?? (isLoading ? "Loading dashboard data..." : "Working...")
+      : null;
+
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="dashboard-shell min-h-screen lg:pl-80">
@@ -2450,10 +2495,14 @@ export function MemberManager() {
                           ? `${serviceEntries.length} recorded`
                           : activeView === "claims"
                             ? "Claim submission tracking"
-                            : `${activeMembers.length} total`}
+                  : `${activeMembers.length} total`}
                 </p>
               </div>
             </header>
+
+            {activeBusyMessage ? (
+              <LoadingStatus message={activeBusyMessage} />
+            ) : null}
 
             {activeView === "summary" ? (
               <SummaryCard
@@ -2696,22 +2745,32 @@ export function MemberManager() {
                       </Field>
 
                       <div className="flex flex-col gap-4 lg:col-span-2">
-                        <ServiceCalendar
-                          activeStatus={serviceForm.serviceLabel}
-                          month={calendarMonth}
-                          days={calendarDays}
-                          expectedDates={expectedServiceDates}
-                          newStatusByDate={newStatusByDateForMonth}
-                          pendingStatusDates={pendingStatusDates}
-                          recordedDates={recordedServiceDatesForMemberMonth}
-                          recordedStatusByDate={displayedStatusByDateForMemberMonth}
-                          selectedDates={effectiveSelectedDatesForMonth}
-                          onClearDates={removeAllSelectedServiceDates}
-                          onMonthChange={handleCalendarMonthChange}
-                          onResetExpected={resetExpectedServiceDates}
-                          onStatusClick={handleStatusOverrideToggle}
-                          onToggleDate={toggleSelectedServiceDate}
-                        />
+                        <div className="relative">
+                          <ServiceCalendar
+                            activeStatus={serviceForm.serviceLabel}
+                            month={calendarMonth}
+                            days={calendarDays}
+                            expectedDates={expectedServiceDates}
+                            newStatusByDate={newStatusByDateForMonth}
+                            pendingStatusDates={pendingStatusDates}
+                            recordedDates={recordedServiceDatesForMemberMonth}
+                            recordedStatusByDate={displayedStatusByDateForMemberMonth}
+                            selectedDates={effectiveSelectedDatesForMonth}
+                            onClearDates={removeAllSelectedServiceDates}
+                            onMonthChange={handleCalendarMonthChange}
+                            onResetExpected={resetExpectedServiceDates}
+                            onStatusClick={handleStatusOverrideToggle}
+                            onToggleDate={toggleSelectedServiceDate}
+                          />
+                          {calendarLoadingMessage ? (
+                            <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-background/65 backdrop-blur-[1px]">
+                              <LoadingStatus
+                                message={calendarLoadingMessage}
+                                compact
+                              />
+                            </div>
+                          ) : null}
+                        </div>
                         <div className="flex min-h-8 flex-wrap gap-2">
                           {datesToCreateForMonth.length === 0 &&
                             entriesToDeleteForMonth.length === 0 &&
@@ -2796,6 +2855,69 @@ export function MemberManager() {
                         </Button>
                       </div>
                     </form>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Recently updated services</CardTitle>
+                    <CardDescription>
+                      Latest service changes by member, date, and status.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <div className="flex min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+                        <Loader2Icon data-icon="inline-start" />
+                        Loading updates
+                      </div>
+                    ) : recentlyUpdatedServiceEntries.length === 0 ? (
+                      <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed px-3 text-sm text-muted-foreground">
+                        No service updates yet
+                      </div>
+                    ) : (
+                      <div className="divide-y rounded-lg border">
+                        {recentlyUpdatedServiceEntries.map((entry) => {
+                          const member = memberById.get(entry.memberId);
+                          const statusStyle = getServiceStatusStyle(entry.serviceLabel);
+
+                          return (
+                            <div
+                              key={`updated-${entry.id}`}
+                              className="grid gap-2 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">
+                                  {member?.displayName ?? "Unknown member"}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {new Date(
+                                    `${entry.serviceDate}T00:00:00`
+                                  ).toLocaleDateString()}
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                                <Badge
+                                  className="gap-1.5"
+                                  variant="outline"
+                                >
+                                  <span
+                                    className={cn(
+                                      "size-2 shrink-0 rounded-full",
+                                      statusStyle.dot
+                                    )}
+                                  />
+                                  {entry.serviceLabel}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {formatServiceEntryUpdatedAt(entry)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -3710,6 +3832,17 @@ function getServiceEntryMemberDateKey(memberId: string, serviceDate: string) {
   return `${memberId}:${serviceDate}`;
 }
 
+function getServiceEntryUpdatedAt(entry: ServiceEntry) {
+  return entry.updatedAt || entry.createdAt;
+}
+
+function formatServiceEntryUpdatedAt(entry: ServiceEntry) {
+  return new Date(getServiceEntryUpdatedAt(entry)).toLocaleString([], {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
 function getCanonicalServiceEntries(entries: ServiceEntry[]) {
   const entriesByMemberDate = new Map<string, ServiceEntry>();
 
@@ -3717,7 +3850,7 @@ function getCanonicalServiceEntries(entries: ServiceEntry[]) {
     const key = getServiceEntryMemberDateKey(entry.memberId, entry.serviceDate);
     const existingEntry = entriesByMemberDate.get(key);
 
-    if (!existingEntry || existingEntry.createdAt <= entry.createdAt) {
+    if (!existingEntry || getServiceEntryUpdatedAt(existingEntry) <= getServiceEntryUpdatedAt(entry)) {
       entriesByMemberDate.set(key, entry);
     }
   }
@@ -3787,6 +3920,33 @@ function Metric({ label, value }: { label: string; value: number }) {
     <div className="flex items-center justify-between border-t border-sidebar-border pt-3">
       <span className="text-sm text-sidebar-foreground/70">{label}</span>
       <strong className="text-2xl">{value}</strong>
+    </div>
+  );
+}
+
+function LoadingStatus({
+  compact = false,
+  message,
+}: {
+  compact?: boolean;
+  message: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-lg border bg-card/95 text-card-foreground shadow-sm",
+        compact ? "w-fit min-w-64" : "w-full"
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-3 px-3 py-2 text-sm">
+        <Loader2Icon className="size-4 animate-spin text-primary" />
+        <span className="font-medium">{message}</span>
+      </div>
+      <div className="h-1 overflow-hidden bg-muted">
+        <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/70" />
+      </div>
     </div>
   );
 }
