@@ -23,6 +23,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ClipboardListIcon,
+  EyeIcon,
   Loader2Icon,
   LogOutIcon,
   MenuIcon,
@@ -62,6 +63,7 @@ import {
 } from "@/lib/service-store";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
+import { MemberDetailCard } from "@/components/member-detail-card";
 import { NewMembersCard } from "@/components/new-members-card";
 import { ServiceCalendar, getServiceStatusStyle } from "@/components/service-calendar";
 import { SummaryCard } from "@/components/summary-card";
@@ -123,7 +125,7 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "services" | "claims" | "summary";
+type ActiveView = "members" | "services" | "claims" | "summary" | "member";
 
 type DateOverride = { action: "add"; status: string } | { action: "remove" };
 
@@ -146,12 +148,14 @@ const maxFailedSignInAttempts = 5;
 const signInLockoutMs = 15 * 60 * 1000;
 const securityEventLookbackMs = 24 * 60 * 60 * 1000;
 const memberActivityPageSize = 10;
+const directoryPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
 const summaryAttendeesPageSize = 10;
 const viewTitles: Record<ActiveView, string> = {
   members: "Members",
   services: "Services",
   claims: "Claims",
+  member: "Member",
   summary: "Summary",
 };
 
@@ -168,9 +172,11 @@ export function MemberManager() {
   );
   const [calendarMonth, setCalendarMonth] = useState(getMonthInputValue());
   const [summaryMonth, setSummaryMonth] = useState(getMonthInputValue());
+  const [memberDetailMonth, setMemberDetailMonth] = useState(getMonthInputValue());
   const [selectedSummaryDate, setSelectedSummaryDate] = useState(getTodayDate());
   const [summaryMemberQuery, setSummaryMemberQuery] = useState("");
   const [summaryAttendeesPage, setSummaryAttendeesPage] = useState(0);
+  const [directoryPage, setDirectoryPage] = useState(0);
   const [newMembersPage, setNewMembersPage] = useState(0);
   const [updatedMembersPage, setUpdatedMembersPage] = useState(0);
   const [servicePage, setServicePage] = useState(0);
@@ -185,6 +191,7 @@ export function MemberManager() {
   >(getStoredDismissedSecurityEventId);
   const [session, setSession] = useState<Session | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("members");
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -263,6 +270,15 @@ export function MemberManager() {
         .includes(normalizedQuery)
     );
   }, [activeMembers, members, query]);
+  const directoryPageCount = Math.max(
+    1,
+    Math.ceil(filteredMembers.length / directoryPageSize)
+  );
+  const safeDirectoryPage = Math.min(directoryPage, directoryPageCount - 1);
+  const visibleDirectoryMembers = filteredMembers.slice(
+    safeDirectoryPage * directoryPageSize,
+    safeDirectoryPage * directoryPageSize + directoryPageSize
+  );
 
   const providerCount = useMemo(
     () => new Set(activeMembers.map((member) => member.provider).filter(Boolean)).size,
@@ -294,6 +310,7 @@ export function MemberManager() {
     () => new Map(members.map((member) => [member.id, member])),
     [members]
   );
+  const selectedMember = selectedMemberId ? memberById.get(selectedMemberId) : null;
 
   const selectedServiceMember = serviceForm.memberId
     ? memberById.get(serviceForm.memberId)
@@ -1413,33 +1430,43 @@ export function MemberManager() {
       return;
     }
 
-    const { error } = await supabase.from("members").delete().eq("id", deleteTarget.id);
+    const deletedMember = deleteTarget;
+    const { error } = await supabase.from("members").delete().eq("id", deletedMember.id);
 
     if (error) {
       showError(error.message);
     } else {
       setMembers((currentMembers) =>
-        currentMembers.filter((member) => member.id !== deleteTarget.id)
+        currentMembers.filter((member) => member.id !== deletedMember.id)
       );
       setServiceEntries((currentEntries) =>
-        currentEntries.filter((entry) => entry.memberId !== deleteTarget.id)
+        currentEntries.filter((entry) => entry.memberId !== deletedMember.id)
+      );
+      setClaims((currentClaims) =>
+        currentClaims.filter((claim) => claim.memberId !== deletedMember.id)
       );
 
-      if (editingId === deleteTarget.id) {
+      if (editingId === deletedMember.id) {
         resetForm();
       }
 
-      if (serviceForm.memberId === deleteTarget.id) {
+      if (selectedMemberId === deletedMember.id) {
+        setSelectedMemberId(null);
+        setActiveView("members");
+      }
+
+      if (serviceForm.memberId === deletedMember.id) {
         setServiceForm((currentForm) => ({
           ...currentForm,
-          memberId: activeMembers.find((member) => member.id !== deleteTarget.id)?.id || "",
+          memberId: activeMembers.find((member) => member.id !== deletedMember.id)?.id || "",
         }));
       }
 
       setDeleteTarget(null);
       setDeletePassword("");
       setDeleteAuthError(null);
-      showInfo(`Deleted ${deleteTarget.displayName}.`);
+      await loadDashboard();
+      showInfo(`Deleted ${deletedMember.displayName}.`);
     }
 
     setIsSaving(false);
@@ -1726,6 +1753,10 @@ export function MemberManager() {
                 <p className="text-sm text-muted-foreground">
                   {isLoading
                     ? "Loading..."
+                    : activeView === "member"
+                      ? selectedMember
+                        ? `${selectedMember.displayName} profile`
+                        : "Select a member"
                     : activeView === "summary"
                       ? `${summaryStats.totalServices} services this month`
                       : activeView === "services"
@@ -1768,6 +1799,19 @@ export function MemberManager() {
               <ClaimsDashboard
                 memberById={memberById}
                 members={activeMembers}
+                serviceEntries={serviceEntries}
+              />
+            ) : activeView === "member" && selectedMember ? (
+              <MemberDetailCard
+                claims={claims}
+                member={selectedMember}
+                month={memberDetailMonth}
+                onBack={() => setActiveView("members")}
+                onEdit={(member) => {
+                  editMember(member);
+                  setActiveView("members");
+                }}
+                onMonthChange={setMemberDetailMonth}
                 serviceEntries={serviceEntries}
               />
             ) : activeView === "services" ? (
@@ -2165,7 +2209,10 @@ export function MemberManager() {
                           className="sm:w-80"
                           placeholder="Search for name"
                           value={query}
-                          onChange={(event) => setQuery(event.target.value)}
+                          onChange={(event) => {
+                            setQuery(event.target.value);
+                            setDirectoryPage(0);
+                          }}
                         />
                         <p className="text-sm text-muted-foreground">
                           {filteredMembers.length} shown
@@ -2195,7 +2242,7 @@ export function MemberManager() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {filteredMembers.map((member) => (
+                            {visibleDirectoryMembers.map((member) => (
                               <TableRow key={member.id}>
                                 <TableCell className="font-medium">
                                   <div className="flex items-center gap-2">
@@ -2216,6 +2263,18 @@ export function MemberManager() {
                                 </TableCell>
                                 <TableCell>
                                   <div className="flex justify-end gap-2">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        setSelectedMemberId(member.id);
+                                        setActiveView("member");
+                                      }}
+                                    >
+                                      <EyeIcon data-icon="inline-start" />
+                                      View
+                                    </Button>
                                     <Button
                                       type="button"
                                       variant="outline"
@@ -2262,6 +2321,39 @@ export function MemberManager() {
                           </TableBody>
                         </Table>
                       )}
+                      {filteredMembers.length > 0 ? (
+                        <div className="flex items-center justify-between gap-3 border-t pt-3 text-sm text-muted-foreground dark:border-white/10">
+                          <span>
+                            Page {safeDirectoryPage + 1} of {directoryPageCount}
+                          </span>
+                          <div className="flex gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon-sm"
+                              disabled={safeDirectoryPage === 0}
+                              onClick={() =>
+                                setDirectoryPage(Math.max(0, safeDirectoryPage - 1))
+                              }
+                            >
+                              <ChevronLeftIcon />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon-sm"
+                              disabled={safeDirectoryPage >= directoryPageCount - 1}
+                              onClick={() =>
+                                setDirectoryPage(
+                                  Math.min(directoryPageCount - 1, safeDirectoryPage + 1)
+                                )
+                              }
+                            >
+                              <ChevronRightIcon />
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
                     </CardContent>
                   ) : null}
                 </Card>
@@ -2292,11 +2384,20 @@ export function MemberManager() {
                       </CardAction>
                     </CardHeader>
                     <CardContent>
-                      <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+                      <form
+                        className="flex flex-col gap-4"
+                        autoComplete="off"
+                        onSubmit={handleSubmit}
+                      >
                         <Field label="Member name" htmlFor="display-name">
                           <Input
                             ref={memberNameInputRef}
                             id="display-name"
+                            name="sophia-member-display-name"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            data-1p-ignore="true"
+                            data-lpignore="true"
                             placeholder="Last, First M."
                             value={form.displayName}
                             onChange={(event) =>
@@ -2338,6 +2439,11 @@ export function MemberManager() {
                         <Field label="Service days" htmlFor="service-days">
                           <Input
                             id="service-days"
+                            name="sophia-member-service-days"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            data-1p-ignore="true"
+                            data-lpignore="true"
                             placeholder="MTWTHF"
                             value={form.serviceDays}
                             onChange={(event) =>
@@ -2536,7 +2642,10 @@ export function MemberManager() {
             <Label htmlFor="delete-password">Password</Label>
             <Input
               id="delete-password"
-              autoComplete="current-password"
+              name="sophia-delete-confirm-password"
+              autoComplete="new-password"
+              data-1p-ignore="true"
+              data-lpignore="true"
               type="password"
               value={deletePassword}
               onChange={(event) => {
