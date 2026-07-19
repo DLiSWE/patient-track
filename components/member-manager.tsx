@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -21,6 +22,7 @@ import {
   CalendarRangeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ClipboardListIcon,
   Loader2Icon,
   LogOutIcon,
   MenuIcon,
@@ -33,6 +35,10 @@ import {
 } from "lucide-react";
 
 import {
+  Claim,
+  mapClaimRow,
+} from "@/lib/claim-store";
+import {
   Member,
   MemberFormValues,
   emptyMemberForm,
@@ -43,6 +49,7 @@ import {
   toMemberUpdate,
 } from "@/lib/member-store";
 import { AddMembersDialog } from "@/components/add-members-dialog";
+import { ClaimsDashboard } from "@/components/claims-dashboard";
 import {
   ServiceEntry,
   ServiceEntryFormValues,
@@ -116,7 +123,7 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "services" | "summary";
+type ActiveView = "members" | "services" | "claims" | "summary";
 
 type DateOverride = { action: "add"; status: string } | { action: "remove" };
 
@@ -144,6 +151,7 @@ const summaryAttendeesPageSize = 10;
 const viewTitles: Record<ActiveView, string> = {
   members: "Members",
   services: "Services",
+  claims: "Claims",
   summary: "Summary",
 };
 
@@ -152,6 +160,7 @@ export function MemberManager() {
   const memberNameInputRef = useRef<HTMLInputElement>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [serviceEntries, setServiceEntries] = useState<ServiceEntry[]>([]);
+  const [claims, setClaims] = useState<Claim[]>([]);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [form, setForm] = useState<MemberFormValues>(emptyMemberForm);
   const [serviceForm, setServiceForm] = useState<ServiceEntryFormValues>(
@@ -160,6 +169,7 @@ export function MemberManager() {
   const [calendarMonth, setCalendarMonth] = useState(getMonthInputValue());
   const [summaryMonth, setSummaryMonth] = useState(getMonthInputValue());
   const [selectedSummaryDate, setSelectedSummaryDate] = useState(getTodayDate());
+  const [summaryMemberQuery, setSummaryMemberQuery] = useState("");
   const [summaryAttendeesPage, setSummaryAttendeesPage] = useState(0);
   const [newMembersPage, setNewMembersPage] = useState(0);
   const [updatedMembersPage, setUpdatedMembersPage] = useState(0);
@@ -167,14 +177,12 @@ export function MemberManager() {
   const [servicePageSize, setServicePageSize] = useState(10);
   const [dateOverrides, setDateOverrides] = useState<Record<string, DateOverride>>({});
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
-  const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>({
-    attempts: 0,
-    lockedUntil: null,
-  });
+  const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>(
+    getStoredFailedSignInState
+  );
   const [dismissedSecurityEventId, setDismissedSecurityEventId] = useState<
     string | null
-  >(null);
-  const [hasMounted, setHasMounted] = useState(false);
+  >(getStoredDismissedSecurityEventId);
   const [session, setSession] = useState<Session | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("members");
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
@@ -184,18 +192,15 @@ export function MemberManager() {
   const [isDiscontinuedOpen, setIsDiscontinuedOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Member | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
+  const [serviceDeleteTarget, setServiceDeleteTarget] = useState<ServiceEntry | null>(
+    null
+  );
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteAuthError, setDeleteAuthError] = useState<string | null>(null);
   const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => {
-    setHasMounted(true);
-    setFailedSignInState(getStoredFailedSignInState());
-    setDismissedSecurityEventId(getStoredDismissedSecurityEventId());
-  }, []);
 
   useEffect(() => {
     if (!failedSignInState.lockedUntil) {
@@ -494,12 +499,50 @@ export function MemberManager() {
     () => getExpectedMembersByDate(summaryMonth, activeMembers, getTodayDate()),
     [activeMembers, summaryMonth]
   );
-  const selectedSummaryExpectedMembers =
-    summaryExpectedMembersByDate.get(selectedSummaryDate) ?? [];
+  const selectedSummaryExpectedMembers = useMemo(
+    () => summaryExpectedMembersByDate.get(selectedSummaryDate) ?? [],
+    [selectedSummaryDate, summaryExpectedMembersByDate]
+  );
   const isSelectedSummaryDateFuture = selectedSummaryDate > getTodayDate();
+  const normalizedSummaryMemberQuery = summaryMemberQuery.trim().toLowerCase();
+  const filteredSelectedSummaryEntries = useMemo(() => {
+    if (!normalizedSummaryMemberQuery) {
+      return selectedSummaryEntries;
+    }
+
+    return selectedSummaryEntries.filter((entry) => {
+      const member = memberById.get(entry.memberId);
+      const searchableText = [
+        member?.displayName,
+        member?.provider,
+        member?.serviceDays,
+        entry.serviceLabel,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return searchableText.includes(normalizedSummaryMemberQuery);
+    });
+  }, [memberById, normalizedSummaryMemberQuery, selectedSummaryEntries]);
+  const filteredSelectedSummaryExpectedMembers = useMemo(() => {
+    if (!normalizedSummaryMemberQuery) {
+      return selectedSummaryExpectedMembers;
+    }
+
+    return selectedSummaryExpectedMembers.filter((member) =>
+      [member.displayName, member.provider, member.serviceDays]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSummaryMemberQuery)
+    );
+  }, [
+    normalizedSummaryMemberQuery,
+    selectedSummaryExpectedMembers,
+  ]);
   const selectedSummaryRowCount = isSelectedSummaryDateFuture
-    ? selectedSummaryExpectedMembers.length
-    : selectedSummaryEntries.length;
+    ? filteredSelectedSummaryExpectedMembers.length
+    : filteredSelectedSummaryEntries.length;
   const summaryAttendeesPageCount = Math.max(
     1,
     Math.ceil(selectedSummaryRowCount / summaryAttendeesPageSize)
@@ -508,11 +551,11 @@ export function MemberManager() {
     summaryAttendeesPage,
     summaryAttendeesPageCount - 1
   );
-  const visibleSummaryEntries = selectedSummaryEntries.slice(
+  const visibleSummaryEntries = filteredSelectedSummaryEntries.slice(
     safeSummaryAttendeesPage * summaryAttendeesPageSize,
     safeSummaryAttendeesPage * summaryAttendeesPageSize + summaryAttendeesPageSize
   );
-  const visibleSummaryExpectedMembers = selectedSummaryExpectedMembers.slice(
+  const visibleSummaryExpectedMembers = filteredSelectedSummaryExpectedMembers.slice(
     safeSummaryAttendeesPage * summaryAttendeesPageSize,
     safeSummaryAttendeesPage * summaryAttendeesPageSize + summaryAttendeesPageSize
   );
@@ -520,6 +563,30 @@ export function MemberManager() {
     () => getSummaryStats(summaryEntriesForMonth, activeMembers.length),
     [activeMembers.length, summaryEntriesForMonth]
   );
+  const summaryClaimsForMonth = useMemo(
+    () => claims.filter((claim) => claim.serviceDate.startsWith(`${summaryMonth}-`)),
+    [claims, summaryMonth]
+  );
+  const summaryClaimStats = useMemo(() => {
+    const counts = {
+      accepted: 0,
+      failed: 0,
+      pending: 0,
+      required: 0,
+      submitted: 0,
+      total: summaryClaimsForMonth.length,
+    };
+
+    for (const claim of summaryClaimsForMonth) {
+      const status = claim.status.toLowerCase();
+
+      if (status in counts) {
+        counts[status as keyof typeof counts] += 1;
+      }
+    }
+
+    return counts;
+  }, [summaryClaimsForMonth]);
   const latestSecurityEvent = securityEvents[0] ?? null;
   const visibleSecurityEvent =
     latestSecurityEvent?.id === dismissedSecurityEventId ? null : latestSecurityEvent;
@@ -530,11 +597,7 @@ export function MemberManager() {
         : "",
     [visibleSecurityEvent]
   );
-  const isSignInLocked = Boolean(
-    hasMounted &&
-    failedSignInState.lockedUntil &&
-    failedSignInState.lockedUntil > Date.now()
-  );
+  const isSignInLocked = Boolean(failedSignInState.lockedUntil);
 
   function showError(nextMessage: string) {
     toast.error(nextMessage);
@@ -562,9 +625,17 @@ export function MemberManager() {
       .order("service_date", { ascending: false })
       .order("created_at", { ascending: false });
 
-    const [membersResult, servicesResult] = await Promise.all([
+    const claimsRequest = supabase
+      .from("claims")
+      .select(
+        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
+      )
+      .order("service_date", { ascending: false });
+
+    const [membersResult, servicesResult, claimsResult] = await Promise.all([
       membersRequest,
       servicesRequest,
+      claimsRequest,
     ]);
 
     if (membersResult.error) {
@@ -585,6 +656,12 @@ export function MemberManager() {
       setServiceEntries(servicesResult.data.map(mapServiceEntryRow));
     }
 
+    if (claimsResult.error) {
+      setClaims([]);
+    } else {
+      setClaims(claimsResult.data.map(mapClaimRow));
+    }
+
     setIsLoading(false);
   }
 
@@ -597,21 +674,7 @@ export function MemberManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-
-    loadSecurityEvents();
-    const intervalId = window.setInterval(loadSecurityEvents, 60_000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session]);
-
-  async function loadSecurityEvents() {
+  const loadSecurityEvents = useCallback(async () => {
     if (!supabase) {
       return;
     }
@@ -638,7 +701,21 @@ export function MemberManager() {
         lockedUntil: event.locked_until,
       }))
     );
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadSecurityEvents();
+    const intervalId = window.setInterval(loadSecurityEvents, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadSecurityEvents, session]);
 
   function acknowledgeSecurityEvent() {
     if (!visibleSecurityEvent) {
@@ -1368,21 +1445,26 @@ export function MemberManager() {
     setIsSaving(false);
   }
 
-  async function deleteServiceEntry(entryId: string) {
-    if (!supabase) {
+  async function confirmDeleteServiceEntry() {
+    if (!supabase || !serviceDeleteTarget) {
       return;
     }
 
     setIsSaving(true);
 
-    const { error } = await supabase.from("service_entries").delete().eq("id", entryId);
+    const { error } = await supabase
+      .from("service_entries")
+      .delete()
+      .eq("id", serviceDeleteTarget.id);
 
     if (error) {
       showError(error.message);
     } else {
       setServiceEntries((currentEntries) =>
-        currentEntries.filter((entry) => entry.id !== entryId)
+        currentEntries.filter((entry) => entry.id !== serviceDeleteTarget.id)
       );
+      showInfo("Deleted service date.");
+      setServiceDeleteTarget(null);
     }
 
     setIsSaving(false);
@@ -1588,6 +1670,22 @@ export function MemberManager() {
                 variant="ghost"
                 className={cn(
                   "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  activeView === "claims" &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+                )}
+                onClick={() => {
+                  setActiveView("claims");
+                  setIsMobileNavOpen(false);
+                }}
+              >
+                <ClipboardListIcon data-icon="inline-start" />
+                Claims
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   activeView === "summary" &&
                   "bg-sidebar-accent text-sidebar-accent-foreground"
                 )}
@@ -1632,7 +1730,9 @@ export function MemberManager() {
                       ? `${summaryStats.totalServices} services this month`
                       : activeView === "services"
                         ? `${serviceEntries.length} recorded`
-                        : `${activeMembers.length} total`}
+                        : activeView === "claims"
+                          ? "Claim submission tracking"
+                          : `${activeMembers.length} total`}
                 </p>
               </div>
             </header>
@@ -1641,13 +1741,19 @@ export function MemberManager() {
               <SummaryCard
                 attendeePage={safeSummaryAttendeesPage}
                 attendeePageCount={summaryAttendeesPageCount}
+                attendeeSearchQuery={summaryMemberQuery}
                 calendarDays={summaryCalendarDays}
+                claimStats={summaryClaimStats}
                 countsByDate={summaryCountsByDate}
                 expectedMembersByDate={summaryExpectedMembersByDate}
                 isShowingExpectedMembers={isSelectedSummaryDateFuture}
                 memberById={memberById}
                 month={summaryMonth}
                 onAttendeePageChange={setSummaryAttendeesPage}
+                onAttendeeSearchChange={(value) => {
+                  setSummaryMemberQuery(value);
+                  setSummaryAttendeesPage(0);
+                }}
                 onMonthChange={handleSummaryMonthChange}
                 onSelectDate={(date) => {
                   setSelectedSummaryDate(date);
@@ -1657,6 +1763,12 @@ export function MemberManager() {
                 stats={summaryStats}
                 visibleEntries={visibleSummaryEntries}
                 visibleExpectedMembers={visibleSummaryExpectedMembers}
+              />
+            ) : activeView === "claims" ? (
+              <ClaimsDashboard
+                memberById={memberById}
+                members={activeMembers}
+                serviceEntries={serviceEntries}
               />
             ) : activeView === "services" ? (
               <div className="flex flex-col gap-5">
@@ -1981,7 +2093,7 @@ export function MemberManager() {
                                       type="button"
                                       variant="destructive"
                                       size="sm"
-                                      onClick={() => deleteServiceEntry(entry.id)}
+                                      onClick={() => setServiceDeleteTarget(entry)}
                                     >
                                       <Trash2Icon data-icon="inline-start" />
                                       Delete
@@ -2328,7 +2440,7 @@ export function MemberManager() {
           }
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className="gap-5">
           <AlertDialogHeader>
             <AlertDialogTitle>Discontinue member?</AlertDialogTitle>
             <AlertDialogDescription>
@@ -2351,6 +2463,57 @@ export function MemberManager() {
       </AlertDialog>
 
       <AlertDialog
+        open={Boolean(serviceDeleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setServiceDeleteTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete service date?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes one recorded service entry. The member record stays active.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {serviceDeleteTarget ? (
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Member</span>
+                <span className="truncate font-medium">
+                  {memberById.get(serviceDeleteTarget.memberId)?.displayName ??
+                    "Unknown member"}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Date</span>
+                <span className="font-medium">
+                  {new Date(
+                    `${serviceDeleteTarget.serviceDate}T00:00:00`
+                  ).toLocaleDateString()}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Status</span>
+                <span className="font-medium">{serviceDeleteTarget.serviceLabel}</span>
+              </div>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep service</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmDeleteServiceEntry}
+              disabled={isSaving}
+            >
+              Delete service
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
           if (!open) {
@@ -2360,12 +2523,12 @@ export function MemberManager() {
           }
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className="gap-5">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete member?</AlertDialogTitle>
             <AlertDialogDescription>
               This permanently removes the record for {deleteTarget?.displayName}, along
-              with their service history. This cannot be undone — if you just want to hide
+              with their service history. This cannot be undone. If you just want to hide
               them, use Discontinue instead. Confirm your password to continue.
             </AlertDialogDescription>
           </AlertDialogHeader>

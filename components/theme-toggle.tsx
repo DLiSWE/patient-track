@@ -8,6 +8,10 @@ import { Button } from "@/components/ui/button";
 type Theme = "dark" | "light";
 
 function getStoredTheme(): Theme {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+
   const savedTheme = window.localStorage.getItem("theme");
 
   if (savedTheme === "dark" || savedTheme === "light") {
@@ -19,24 +23,26 @@ function getStoredTheme(): Theme {
 
 export function ThemeToggle({ className }: { className?: string }) {
   const [theme, setTheme] = useState<Theme>("light");
-  const [hasLoadedTheme, setHasLoadedTheme] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
-    setTheme(getStoredTheme());
-    setHasLoadedTheme(true);
+    queueMicrotask(() => {
+      setTheme(getStoredTheme());
+      setIsMounted(true);
+    });
   }, []);
 
   useEffect(() => {
-    if (!hasLoadedTheme) {
+    if (!isMounted) {
       return;
     }
 
     document.documentElement.classList.toggle("dark", theme === "dark");
     window.localStorage.setItem("theme", theme);
-  }, [hasLoadedTheme, theme]);
+  }, [isMounted, theme]);
 
   const isDark = theme === "dark";
-  const label = hasLoadedTheme ? (isDark ? "Light" : "Dark") : "Theme";
+  const label = isDark ? "Light" : "Dark";
 
   return (
     <Button
@@ -44,13 +50,10 @@ export function ThemeToggle({ className }: { className?: string }) {
       variant="outline"
       size="sm"
       className={className}
-      suppressHydrationWarning
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       onClick={() => setTheme(isDark ? "light" : "dark")}
     >
-      {!hasLoadedTheme ? (
-        <MoonIcon data-icon="inline-start" />
-      ) : isDark ? (
+      {isDark ? (
         <SunIcon data-icon="inline-start" />
       ) : (
         <MoonIcon data-icon="inline-start" />

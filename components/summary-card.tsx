@@ -1,7 +1,12 @@
 import {
+  AlertTriangleIcon,
   BarChart3Icon,
+  CheckCircle2Icon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ClipboardListIcon,
+  ClockIcon,
+  SearchIcon,
   UsersIcon,
 } from "lucide-react";
 
@@ -27,13 +32,16 @@ import { cn } from "@/lib/utils";
 export function SummaryCard({
   attendeePage,
   attendeePageCount,
+  attendeeSearchQuery,
   calendarDays,
+  claimStats,
   countsByDate,
   expectedMembersByDate,
   isShowingExpectedMembers,
   memberById,
   month,
   onAttendeePageChange,
+  onAttendeeSearchChange,
   onMonthChange,
   onSelectDate,
   selectedDate,
@@ -43,13 +51,23 @@ export function SummaryCard({
 }: {
   attendeePage: number;
   attendeePageCount: number;
+  attendeeSearchQuery: string;
   calendarDays: Array<CalendarDay | null>;
+  claimStats: {
+    accepted: number;
+    failed: number;
+    pending: number;
+    required: number;
+    submitted: number;
+    total: number;
+  };
   countsByDate: Map<string, number>;
   expectedMembersByDate: Map<string, Member[]>;
   isShowingExpectedMembers: boolean;
   memberById: Map<string, Member>;
   month: string;
   onAttendeePageChange: (page: number) => void;
+  onAttendeeSearchChange: (query: string) => void;
   onMonthChange: (month: string) => void;
   onSelectDate: (date: string) => void;
   selectedDate: string;
@@ -74,6 +92,37 @@ export function SummaryCard({
         </CardAction>
       </CardHeader>
       <CardContent>
+        <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <ClaimWidget
+            icon={ClipboardListIcon}
+            label="Required"
+            value={claimStats.required}
+            detail={`${claimStats.total} total this month`}
+            tone="violet"
+          />
+          <ClaimWidget
+            icon={ClockIcon}
+            label="Pending"
+            value={claimStats.pending}
+            detail={`${claimStats.submitted} submitted`}
+            tone="slate"
+          />
+          <ClaimWidget
+            icon={CheckCircle2Icon}
+            label="Accepted"
+            value={claimStats.accepted}
+            detail="Cleared claims"
+            tone="emerald"
+          />
+          <ClaimWidget
+            icon={AlertTriangleIcon}
+            label="Needs review"
+            value={claimStats.failed}
+            detail="Failed claim attempts"
+            tone="rose"
+          />
+        </div>
+
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-7 gap-1.5">
@@ -217,11 +266,27 @@ export function SummaryCard({
                   </Button>
                 </div>
               </div>
+              <div className="border-b px-3 py-2 dark:border-white/10">
+                <div className="relative">
+                  <SearchIcon
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <Input
+                    className="h-9 pl-9"
+                    placeholder="Search members"
+                    value={attendeeSearchQuery}
+                    onChange={(event) => onAttendeeSearchChange(event.target.value)}
+                  />
+                </div>
+              </div>
               <div className="flex min-h-40 flex-col">
                 {isShowingExpectedMembers ? (
                   visibleExpectedMembers.length === 0 ? (
                     <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                      No expected members
+                      {attendeeSearchQuery.trim()
+                        ? "No matching members"
+                        : "No expected members"}
                     </div>
                   ) : (
                     visibleExpectedMembers.map((member) => (
@@ -240,7 +305,9 @@ export function SummaryCard({
                   )
                 ) : visibleEntries.length === 0 ? (
                   <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                    No services recorded
+                    {attendeeSearchQuery.trim()
+                      ? "No matching members"
+                      : "No services recorded"}
                   </div>
                 ) : (
                   visibleEntries.map((entry) => (
@@ -274,6 +341,45 @@ function SummaryMetric({ label, value }: { label: string; value: number | string
     <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function ClaimWidget({
+  detail,
+  icon: Icon,
+  label,
+  tone,
+  value,
+}: {
+  detail: string;
+  icon: typeof ClipboardListIcon;
+  label: string;
+  tone: "emerald" | "rose" | "slate" | "violet";
+  value: number;
+}) {
+  const toneClassNames = {
+    emerald:
+      "border-emerald-500/25 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100",
+    rose: "border-rose-500/25 bg-rose-500/10 text-rose-900 dark:text-rose-100",
+    slate: "border-slate-500/25 bg-slate-500/10 text-slate-900 dark:text-slate-100",
+    violet:
+      "border-violet-500/25 bg-violet-500/10 text-violet-900 dark:text-violet-100",
+  };
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 dark:bg-white/[0.03]",
+        toneClassNames[tone]
+      )}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+        <Icon data-icon="inline-start" />
+      </div>
+      <p className="text-2xl font-semibold">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
 }
