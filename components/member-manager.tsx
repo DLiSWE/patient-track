@@ -24,6 +24,7 @@ import {
   ChevronRightIcon,
   ClipboardListIcon,
   EyeIcon,
+  HistoryIcon,
   KeyRoundIcon,
   Loader2Icon,
   LogOutIcon,
@@ -41,6 +42,7 @@ import {
   Claim,
   fetchAllClaims,
 } from "@/lib/claim-store";
+import { AuditEventInput, createAuditEvent } from "@/lib/audit-store";
 import {
   Member,
   MemberFormValues,
@@ -53,6 +55,7 @@ import {
   toMemberUpdate,
 } from "@/lib/member-store";
 import { AddMembersDialog } from "@/components/add-members-dialog";
+import { AuditLog } from "@/components/audit-log";
 import { ClaimsDashboard } from "@/components/claims-dashboard";
 import {
   ServiceEntry,
@@ -139,7 +142,7 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "services" | "claims" | "summary" | "member";
+type ActiveView = "members" | "services" | "claims" | "summary" | "audit" | "member";
 type DirectorySortField = "displayName" | "provider" | "updatedAt";
 type SortDirection = "asc" | "desc";
 
@@ -179,6 +182,7 @@ const viewTitles: Record<ActiveView, string> = {
   members: "Members",
   services: "Services",
   claims: "Claims",
+  audit: "Audit",
   member: "Member",
   summary: "Summary",
 };
@@ -744,6 +748,21 @@ export function MemberManager() {
     toast.success(nextMessage);
   }
 
+  async function recordAuditEvent(input: AuditEventInput) {
+    if (!supabase) {
+      return;
+    }
+
+    const { error } = await createAuditEvent(supabase, {
+      ...input,
+      actorEmail: session?.user.email ?? null,
+    });
+
+    if (error) {
+      console.error("Audit event failed", error.message);
+    }
+  }
+
   async function refreshMfaState() {
     if (!supabase) {
       return false;
@@ -1226,6 +1245,26 @@ export function MemberManager() {
         return nextOverrides;
       });
       setStatusOverrides({});
+      await recordAuditEvent({
+        action: "service_calendar_saved",
+        entityType: "service",
+        entityId: serviceForm.memberId,
+        summary: `Saved service calendar changes for ${selectedServiceMember?.displayName ?? "selected member"}.`,
+        metadata: {
+          member: selectedServiceMember?.displayName,
+          month: calendarMonth,
+          added: datesToCreate.length,
+          removed: entriesToDelete.length,
+          statusChanged: statusChangesToApply.length,
+          addedDates: datesToCreate.map((item) => item.serviceDate),
+          removedDates: entriesToDelete.map((entry) => entry.serviceDate),
+          statusChanges: statusChangesToApply.map(({ entry, status }) => ({
+            date: entry.serviceDate,
+            from: entry.serviceLabel,
+            to: status,
+          })),
+        },
+      });
       showInfo("Service dates saved.");
     }
 
@@ -1339,6 +1378,17 @@ export function MemberManager() {
       getCanonicalServiceEntries([...currentEntries, ...refreshedRangeEntries])
     );
 
+    await recordAuditEvent({
+      action: "services_bulk_filled",
+      entityType: "service",
+      summary: `Bulk filled ${addedCount} service ${addedCount === 1 ? "entry" : "entries"}.`,
+      metadata: {
+        range,
+        start,
+        end,
+        added: addedCount,
+      },
+    });
     showInfo(
       `Added ${addedCount} service ${addedCount === 1 ? "entry" : "entries"}.`
     );
@@ -1458,6 +1508,19 @@ export function MemberManager() {
     const succeeded = await updateServiceEntryStatus(entry.id, newLabel);
 
     if (succeeded) {
+      const member = memberById.get(entry.memberId);
+      await recordAuditEvent({
+        action: "service_status_updated",
+        entityType: "service",
+        entityId: entry.id,
+        summary: `Changed ${member?.displayName ?? "a member"} on ${entry.serviceDate} to ${newLabel}.`,
+        metadata: {
+          member: member?.displayName,
+          serviceDate: entry.serviceDate,
+          from: entry.serviceLabel,
+          to: newLabel,
+        },
+      });
       showInfo(`Set ${entry.serviceDate} to ${newLabel}.`);
     }
   }
@@ -1657,6 +1720,17 @@ export function MemberManager() {
         setDateOverrides({});
         setStatusOverrides({});
         await refreshServiceCalendarMonth(updatedMember.id, calendarMonth);
+        await recordAuditEvent({
+          action: "member_updated",
+          entityType: "member",
+          entityId: updatedMember.id,
+          summary: `Updated ${updatedMember.displayName}.`,
+          metadata: {
+            member: updatedMember.displayName,
+            provider: updatedMember.provider,
+            serviceDays: updatedMember.serviceDays,
+          },
+        });
         showInfo(`Updated ${updatedMember.displayName}.`);
       }
     } else {
@@ -1681,6 +1755,17 @@ export function MemberManager() {
         }));
         resetForm();
         await loadDashboard();
+        await recordAuditEvent({
+          action: "member_created",
+          entityType: "member",
+          entityId: nextMember.id,
+          summary: `Added ${nextMember.displayName}.`,
+          metadata: {
+            member: nextMember.displayName,
+            provider: nextMember.provider,
+            serviceDays: nextMember.serviceDays,
+          },
+        });
         showInfo(`Added ${nextMember.displayName}.`);
       }
     }
@@ -1743,6 +1828,15 @@ export function MemberManager() {
     }
 
     showInfo(`Added ${nextMembers.length} member${nextMembers.length === 1 ? "" : "s"}.`);
+    await recordAuditEvent({
+      action: "members_bulk_created",
+      entityType: "member",
+      summary: `Added ${nextMembers.length} members.`,
+      metadata: {
+        count: nextMembers.length,
+        members: nextMembers.map((member) => member.displayName),
+      },
+    });
     setIsSaving(false);
     return true;
   }
@@ -1807,6 +1901,16 @@ export function MemberManager() {
       }
 
       setArchiveTarget(null);
+      await recordAuditEvent({
+        action: "member_archived",
+        entityType: "member",
+        entityId: updatedMember.id,
+        summary: `Discontinued ${updatedMember.displayName}.`,
+        metadata: {
+          member: updatedMember.displayName,
+          provider: updatedMember.provider,
+        },
+      });
       showInfo(`Discontinued ${updatedMember.displayName}.`);
     }
 
@@ -1837,6 +1941,16 @@ export function MemberManager() {
           current.id === updatedMember.id ? updatedMember : current
         )
       );
+      await recordAuditEvent({
+        action: "member_reinstated",
+        entityType: "member",
+        entityId: updatedMember.id,
+        summary: `Reinstated ${updatedMember.displayName}.`,
+        metadata: {
+          member: updatedMember.displayName,
+          provider: updatedMember.provider,
+        },
+      });
       showInfo(`Reinstated ${updatedMember.displayName}.`);
     }
 
@@ -1911,6 +2025,17 @@ export function MemberManager() {
       setDeletePassword("");
       setDeleteAuthError(null);
       await loadDashboard();
+      await recordAuditEvent({
+        action: "member_deleted",
+        entityType: "member",
+        entityId: deletedMember.id,
+        summary: `Deleted ${deletedMember.displayName}.`,
+        metadata: {
+          member: deletedMember.displayName,
+          provider: deletedMember.provider,
+          serviceDays: deletedMember.serviceDays,
+        },
+      });
       showInfo(`Deleted ${deletedMember.displayName}.`);
     }
 
@@ -1940,6 +2065,17 @@ export function MemberManager() {
         const nextIds = new Set(currentIds);
         nextIds.delete(serviceDeleteTarget.id);
         return nextIds;
+      });
+      await recordAuditEvent({
+        action: "service_deleted",
+        entityType: "service",
+        entityId: serviceDeleteTarget.id,
+        summary: `Deleted service date for ${memberById.get(serviceDeleteTarget.memberId)?.displayName ?? "a member"}.`,
+        metadata: {
+          member: memberById.get(serviceDeleteTarget.memberId)?.displayName,
+          serviceDate: serviceDeleteTarget.serviceDate,
+          status: serviceDeleteTarget.serviceLabel,
+        },
       });
       showInfo("Deleted service date.");
       setServiceDeleteTarget(null);
@@ -1999,6 +2135,18 @@ export function MemberManager() {
       );
       setSelectedServiceEntryIds(new Set());
       setIsBulkServiceDeleteOpen(false);
+      await recordAuditEvent({
+        action: "services_bulk_deleted",
+        entityType: "service",
+        summary: `Deleted ${idsToDelete.length} service dates.`,
+        metadata: {
+          count: idsToDelete.length,
+          dates: selectedServiceEntries.map((entry) => entry.serviceDate),
+          members: selectedServiceEntries.map(
+            (entry) => memberById.get(entry.memberId)?.displayName ?? "Unknown member"
+          ),
+        },
+      });
       showInfo(`Deleted ${idsToDelete.length} service date${idsToDelete.length === 1 ? "" : "s"}.`);
     }
 
@@ -2456,6 +2604,22 @@ export function MemberManager() {
                 <BarChart3Icon data-icon="inline-start" />
                 Summary
               </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  activeView === "audit" &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+                )}
+                onClick={() => {
+                  setActiveView("audit");
+                  setIsMobileNavOpen(false);
+                }}
+              >
+                <HistoryIcon data-icon="inline-start" />
+                Audit
+              </Button>
             </nav>
 
             <div className="mt-auto flex flex-col gap-3">
@@ -2491,11 +2655,13 @@ export function MemberManager() {
                         : "Select a member"
                       : activeView === "summary"
                         ? `${summaryStats.totalServices} services this month`
-                        : activeView === "services"
-                          ? `${serviceEntries.length} recorded`
-                          : activeView === "claims"
-                            ? "Claim submission tracking"
-                  : `${activeMembers.length} total`}
+                        : activeView === "audit"
+                          ? "Recent system activity"
+                          : activeView === "services"
+                            ? `${serviceEntries.length} recorded`
+                            : activeView === "claims"
+                              ? "Claim submission tracking"
+                              : `${activeMembers.length} total`}
                 </p>
               </div>
             </header>
@@ -2531,10 +2697,13 @@ export function MemberManager() {
                 visibleEntries={visibleSummaryEntries}
                 visibleExpectedMembers={visibleSummaryExpectedMembers}
               />
+            ) : activeView === "audit" ? (
+              <AuditLog />
             ) : activeView === "claims" ? (
               <ClaimsDashboard
                 memberById={memberById}
                 members={activeMembers}
+                onAudit={recordAuditEvent}
                 serviceEntries={serviceEntries}
               />
             ) : activeView === "member" && selectedMember ? (

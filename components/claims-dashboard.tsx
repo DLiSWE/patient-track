@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
@@ -27,6 +27,7 @@ import {
   toClaimInsert,
   toClaimUpdate,
 } from "@/lib/claim-store";
+import type { AuditEventInput } from "@/lib/audit-store";
 import { getMonthDateRange, getMonthInputValue, getWeekDateRange } from "@/lib/date-utils";
 import { getProviderLabel, type Member } from "@/lib/member-store";
 import { getTodayDate, type ServiceEntry } from "@/lib/service-store";
@@ -83,13 +84,25 @@ import { cn } from "@/lib/utils";
 
 const claimsPageSize = 10;
 
+type MemberClaimGroup = {
+  member: Member | null;
+  memberId: string;
+  claims: Claim[];
+  statusCounts: Record<string, number>;
+  latestServiceDate: string;
+  earliestServiceDate: string;
+  lastAttemptedAt: string | null;
+};
+
 export function ClaimsDashboard({
   memberById,
   members,
+  onAudit,
   serviceEntries,
 }: {
   memberById: Map<string, Member>;
   members: Member[];
+  onAudit?: (input: AuditEventInput) => Promise<void>;
   serviceEntries: ServiceEntry[];
 }) {
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -99,6 +112,9 @@ export function ClaimsDashboard({
   const [statusFilter, setStatusFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
+  const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
   const [form, setForm] = useState<ClaimFormValues>(createEmptyClaimForm());
@@ -130,10 +146,12 @@ export function ClaimsDashboard({
     loadClaims();
   }, []);
 
+  const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
+
   const filteredClaims = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return claims.filter((claim) => {
+    return canonicalClaims.filter((claim) => {
       if (statusFilter !== "All" && claim.status.toLowerCase() !== statusFilter.toLowerCase()) {
         return false;
       }
@@ -145,33 +163,80 @@ export function ClaimsDashboard({
       const memberName = memberById.get(claim.memberId)?.displayName ?? "";
       return memberName.toLowerCase().includes(normalizedQuery);
     });
-  }, [claims, memberById, query, statusFilter]);
+  }, [canonicalClaims, memberById, query, statusFilter]);
 
   const stats = useMemo(() => {
-    const counts: Record<string, number> = { Total: claims.length };
+    const counts: Record<string, number> = { Total: canonicalClaims.length };
 
     for (const status of claimStatusOptions) {
       counts[status.value] = 0;
     }
 
-    for (const claim of claims) {
+    for (const claim of canonicalClaims) {
       counts[claim.status] = (counts[claim.status] ?? 0) + 1;
     }
 
     return counts;
-  }, [claims]);
+  }, [canonicalClaims]);
 
   const lastFailedClaim = useMemo(() => {
-    return claims
+    return canonicalClaims
       .filter((claim) => claim.status.toLowerCase() === "failed")
       .sort((left, right) =>
         (right.lastAttemptedAt ?? "").localeCompare(left.lastAttemptedAt ?? "")
       )[0];
-  }, [claims]);
+  }, [canonicalClaims]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredClaims.length / claimsPageSize));
+  const memberClaimGroups = useMemo(() => {
+    const groupsByMember = new Map<string, Claim[]>();
+
+    for (const claim of filteredClaims) {
+      const memberClaims = groupsByMember.get(claim.memberId) ?? [];
+      memberClaims.push(claim);
+      groupsByMember.set(claim.memberId, memberClaims);
+    }
+
+    return Array.from(groupsByMember.entries())
+      .map(([memberId, memberClaims]) => {
+        const sortedClaims = [...memberClaims].sort((left, right) =>
+          right.serviceDate.localeCompare(left.serviceDate)
+        );
+        const statusCounts: Record<string, number> = {};
+
+        for (const status of claimStatusOptions) {
+          statusCounts[status.value] = 0;
+        }
+
+        for (const claim of sortedClaims) {
+          statusCounts[claim.status] = (statusCounts[claim.status] ?? 0) + 1;
+        }
+
+        return {
+          member: memberById.get(memberId) ?? null,
+          memberId,
+          claims: sortedClaims,
+          statusCounts,
+          latestServiceDate: sortedClaims[0]?.serviceDate ?? "",
+          earliestServiceDate: sortedClaims[sortedClaims.length - 1]?.serviceDate ?? "",
+          lastAttemptedAt: sortedClaims
+            .map((claim) => claim.lastAttemptedAt)
+            .filter((value): value is string => Boolean(value))
+            .sort()
+            .at(-1) ?? null,
+        };
+      })
+      .sort((left, right) => {
+        const leftName = left.member?.displayName ?? "Unknown member";
+        const rightName = right.member?.displayName ?? "Unknown member";
+        const nameSort = leftName.localeCompare(rightName);
+
+        return nameSort || right.latestServiceDate.localeCompare(left.latestServiceDate);
+      });
+  }, [filteredClaims, memberById]);
+
+  const pageCount = Math.max(1, Math.ceil(memberClaimGroups.length / claimsPageSize));
   const safePage = Math.min(page, pageCount - 1);
-  const visibleClaims = filteredClaims.slice(
+  const visibleMemberClaimGroups = memberClaimGroups.slice(
     safePage * claimsPageSize,
     safePage * claimsPageSize + claimsPageSize
   );
@@ -191,6 +256,20 @@ export function ClaimsDashboard({
       lastFailureReason: claim.lastFailureReason ?? "",
     });
     setIsFormOpen(true);
+  }
+
+  function toggleMemberClaimGroup(memberId: string) {
+    setExpandedMemberIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (nextIds.has(memberId)) {
+        nextIds.delete(memberId);
+      } else {
+        nextIds.add(memberId);
+      }
+
+      return nextIds;
+    });
   }
 
   async function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
@@ -218,8 +297,22 @@ export function ClaimsDashboard({
       } else {
         const updatedClaim = mapClaimRow(data);
         setClaims((currentClaims) =>
-          currentClaims.map((claim) => (claim.id === updatedClaim.id ? updatedClaim : claim))
+          getCanonicalClaims([
+            ...currentClaims.filter((claim) => claim.id !== updatedClaim.id),
+            updatedClaim,
+          ])
         );
+        await onAudit?.({
+          action: "claim_updated",
+          entityType: "claim",
+          entityId: updatedClaim.id,
+          summary: `Updated claim for ${memberById.get(updatedClaim.memberId)?.displayName ?? "a member"}.`,
+          metadata: {
+            member: memberById.get(updatedClaim.memberId)?.displayName,
+            serviceDate: updatedClaim.serviceDate,
+            status: updatedClaim.status,
+          },
+        });
         toast.success("Claim updated.");
         setIsFormOpen(false);
       }
@@ -237,10 +330,19 @@ export function ClaimsDashboard({
       } else {
         const newClaim = mapClaimRow(data);
         setClaims((currentClaims) =>
-          [newClaim, ...currentClaims].sort((left, right) =>
-            right.serviceDate.localeCompare(left.serviceDate)
-          )
+          getCanonicalClaims([newClaim, ...currentClaims])
         );
+        await onAudit?.({
+          action: "claim_created",
+          entityType: "claim",
+          entityId: newClaim.id,
+          summary: `Added claim for ${memberById.get(newClaim.memberId)?.displayName ?? "a member"}.`,
+          metadata: {
+            member: memberById.get(newClaim.memberId)?.displayName,
+            serviceDate: newClaim.serviceDate,
+            status: newClaim.status,
+          },
+        });
         toast.success("Claim added.");
         setIsFormOpen(false);
       }
@@ -263,10 +365,22 @@ export function ClaimsDashboard({
     if (error) {
       toast.error(error.message);
     } else {
+      const deletedClaim = deleteTarget;
       setClaims((currentClaims) =>
-        currentClaims.filter((claim) => claim.id !== deleteTarget.id)
+        currentClaims.filter((claim) => claim.id !== deletedClaim.id)
       );
       setDeleteTarget(null);
+      await onAudit?.({
+        action: "claim_deleted",
+        entityType: "claim",
+        entityId: deletedClaim.id,
+        summary: `Deleted claim for ${memberById.get(deletedClaim.memberId)?.displayName ?? "a member"}.`,
+        metadata: {
+          member: memberById.get(deletedClaim.memberId)?.displayName,
+          serviceDate: deletedClaim.serviceDate,
+          status: deletedClaim.status,
+        },
+      });
       toast.success("Claim deleted.");
     }
 
@@ -358,17 +472,19 @@ export function ClaimsDashboard({
       toast.error(error.message);
     } else {
       const newClaims = data.map(mapClaimRow);
-      setClaims((currentClaims) => {
-        const claimsById = new Map(
-          [...currentClaims, ...freshExistingClaims, ...newClaims].map((claim) => [
-            claim.id,
-            claim,
-          ])
-        );
-
-        return Array.from(claimsById.values()).sort((left, right) =>
-          right.serviceDate.localeCompare(left.serviceDate)
-        );
+      setClaims((currentClaims) =>
+        getCanonicalClaims([...currentClaims, ...freshExistingClaims, ...newClaims])
+      );
+      await onAudit?.({
+        action: "claims_generated",
+        entityType: "claim",
+        summary: `Generated ${newClaims.length} required claims.`,
+        metadata: {
+          range,
+          start,
+          end,
+          count: newClaims.length,
+        },
       });
       toast.success(
         `Generated ${newClaims.length} required claim${newClaims.length === 1 ? "" : "s"}.`
@@ -500,7 +616,7 @@ export function ClaimsDashboard({
               <Loader2Icon data-icon="inline-start" />
               Loading claims
             </div>
-          ) : filteredClaims.length === 0 ? (
+          ) : memberClaimGroups.length === 0 ? (
             <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
               <h3 className="font-medium">No claims found</h3>
               <p className="max-w-sm text-sm text-muted-foreground">
@@ -513,68 +629,137 @@ export function ClaimsDashboard({
                 <TableRow>
                   <TableHead>Member</TableHead>
                   <TableHead>Provider</TableHead>
-                  <TableHead>Service date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Attempts</TableHead>
+                  <TableHead>Service range</TableHead>
+                  <TableHead>Status counts</TableHead>
+                  <TableHead className="text-right">Claims</TableHead>
                   <TableHead>Last attempted</TableHead>
-                  <TableHead>Last failure</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visibleClaims.map((claim) => {
-                  const claimMember = memberById.get(claim.memberId);
+                {visibleMemberClaimGroups.map((group) => {
+                  const isExpanded = expandedMemberIds.has(group.memberId);
 
                   return (
-                    <TableRow key={claim.id}>
-                      <TableCell className="font-medium">
-                        {claimMember?.displayName ?? "Unknown member"}
-                      </TableCell>
-                      <TableCell>
-                        {claimMember?.provider
-                          ? getProviderLabel(claimMember.provider)
-                          : "Not set"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {new Date(`${claim.serviceDate}T00:00:00`).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={cn("gap-1.5", getClaimStatusStyle(claim.status).badge)}>
-                          {claim.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">{claim.attemptCount}</TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        {claim.lastAttemptedAt
-                          ? new Date(claim.lastAttemptedAt).toLocaleString()
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
-                        {claim.lastFailureReason || "—"}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => openEditDialog(claim)}
-                          >
-                            <PencilIcon data-icon="inline-start" />
-                            Edit
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => setDeleteTarget(claim)}
-                          >
-                            <Trash2Icon data-icon="inline-start" />
-                            Delete
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <Fragment key={group.memberId}>
+                      <TableRow key={group.memberId}>
+                        <TableCell className="font-medium">
+                          {group.member?.displayName ?? "Unknown member"}
+                        </TableCell>
+                        <TableCell>
+                          {group.member?.provider
+                            ? getProviderLabel(group.member.provider)
+                            : "Not set"}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">
+                          {formatClaimServiceRange(group)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex max-w-sm flex-wrap gap-1.5">
+                            {claimStatusOptions
+                              .filter((status) => group.statusCounts[status.value] > 0)
+                              .map((status) => (
+                                <Badge
+                                  key={`${group.memberId}-${status.value}`}
+                                  className={cn(
+                                    "gap-1.5",
+                                    getClaimStatusStyle(status.value).badge
+                                  )}
+                                >
+                                  {status.label}: {group.statusCounts[status.value]}
+                                </Badge>
+                              ))}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">{group.claims.length}</TableCell>
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                          {group.lastAttemptedAt
+                            ? new Date(group.lastAttemptedAt).toLocaleString()
+                            : "—"}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => toggleMemberClaimGroup(group.memberId)}
+                            >
+                              <ChevronRightIcon
+                                className={cn("transition-transform", isExpanded && "rotate-90")}
+                                data-icon="inline-start"
+                              />
+                              {isExpanded ? "Hide dates" : "View dates"}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded ? (
+                        <TableRow key={`${group.memberId}-dates`}>
+                          <TableCell colSpan={7} className="bg-muted/30 p-0">
+                            <div className="max-h-80 overflow-y-auto p-3">
+                              <div className="grid gap-2">
+                                {group.claims.map((claim) => (
+                                  <div
+                                    key={claim.id}
+                                    className="grid gap-2 rounded-lg border bg-background p-3 md:grid-cols-[7rem_8rem_minmax(0,1fr)_auto] md:items-center"
+                                  >
+                                    <span className="text-sm font-medium">
+                                      {new Date(
+                                        `${claim.serviceDate}T00:00:00`
+                                      ).toLocaleDateString()}
+                                    </span>
+                                    <Badge
+                                      className={cn(
+                                        "w-fit gap-1.5",
+                                        getClaimStatusStyle(claim.status).badge
+                                      )}
+                                    >
+                                      {claim.status}
+                                    </Badge>
+                                    <div className="min-w-0 text-xs text-muted-foreground">
+                                      {claim.lastFailureReason ? (
+                                        <span className="block truncate">
+                                          {claim.lastFailureReason}
+                                        </span>
+                                      ) : (
+                                        <span>
+                                          {claim.lastAttemptedAt
+                                            ? `Last attempted ${new Date(
+                                              claim.lastAttemptedAt
+                                            ).toLocaleString()}`
+                                            : "No claim attempt recorded"}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex justify-end gap-2">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => openEditDialog(claim)}
+                                      >
+                                        <PencilIcon data-icon="inline-start" />
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => setDeleteTarget(claim)}
+                                      >
+                                        <Trash2Icon data-icon="inline-start" />
+                                        Delete
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </TableBody>
@@ -583,7 +768,7 @@ export function ClaimsDashboard({
 
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground">
-              Page {safePage + 1} of {pageCount}
+              Page {safePage + 1} of {pageCount} · {memberClaimGroups.length} members
             </span>
             <div className="flex gap-1">
               <Button
@@ -770,6 +955,35 @@ function StatCard({
       </p>
       <p className="text-2xl font-semibold">{value}</p>
     </div>
+  );
+}
+
+function formatClaimServiceRange(group: MemberClaimGroup) {
+  if (!group.earliestServiceDate || !group.latestServiceDate) {
+    return "—";
+  }
+
+  const earliestDate = new Date(`${group.earliestServiceDate}T00:00:00`).toLocaleDateString();
+  const latestDate = new Date(`${group.latestServiceDate}T00:00:00`).toLocaleDateString();
+
+  return group.earliestServiceDate === group.latestServiceDate
+    ? latestDate
+    : `${earliestDate} - ${latestDate}`;
+}
+
+function getCanonicalClaims(claims: Claim[]) {
+  const claimsById = new Map<string, Claim>();
+
+  for (const claim of claims) {
+    const existingClaim = claimsById.get(claim.id);
+
+    if (!existingClaim || existingClaim.updatedAt <= claim.updatedAt) {
+      claimsById.set(claim.id, claim);
+    }
+  }
+
+  return Array.from(claimsById.values()).sort((left, right) =>
+    right.serviceDate.localeCompare(left.serviceDate)
   );
 }
 
