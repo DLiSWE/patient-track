@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
@@ -40,7 +40,8 @@ import {
 
 import {
   Claim,
-  fetchAllClaims,
+  fetchClaimsInRange,
+  toClaimInsert,
 } from "@/lib/claim-store";
 import { AuditEventInput, createAuditEvent } from "@/lib/audit-store";
 import {
@@ -62,7 +63,6 @@ import {
   ServiceEntryFormValues,
   createEmptyServiceEntryForm,
   defaultServiceStatus,
-  fetchAllServiceEntries,
   fetchServiceEntriesInRange,
   getTodayDate,
   mapServiceEntryRow,
@@ -200,6 +200,10 @@ export function MemberManager() {
   );
   const [calendarMonth, setCalendarMonth] = useState(getMonthInputValue());
   const [summaryMonth, setSummaryMonth] = useState(getMonthInputValue());
+  const [claimsMonth, setClaimsMonth] = useState(getMonthInputValue());
+  const [loadedDataMonths, setLoadedDataMonths] = useState<Set<string>>(
+    () => new Set()
+  );
   const [memberDetailMonth, setMemberDetailMonth] = useState(getMonthInputValue());
   const [selectedSummaryDate, setSelectedSummaryDate] = useState(getTodayDate());
   const [summaryMemberQuery, setSummaryMemberQuery] = useState("");
@@ -252,9 +256,12 @@ export function MemberManager() {
     () => new Set()
   );
   const [isBulkServiceDeleteOpen, setIsBulkServiceDeleteOpen] = useState(false);
+  const [isMonthResetOpen, setIsMonthResetOpen] = useState(false);
+  const [monthResetConfirmation, setMonthResetConfirmation] = useState("");
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
+  const [isMonthLoading, setIsMonthLoading] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [calendarLoadingMessage, setCalendarLoadingMessage] = useState<string | null>(
     null
@@ -294,6 +301,7 @@ export function MemberManager() {
         setMembers([]);
         setServiceEntries([]);
         setClaims([]);
+        setLoadedDataMonths(new Set());
         setIsMfaChallengeRequired(false);
         setMfaFactorId("");
         setMfaCode("");
@@ -405,7 +413,10 @@ export function MemberManager() {
       const key = getServiceEntryMemberDateKey(entry.memberId, entry.serviceDate);
       const existingEntry = entriesByMemberDate.get(key);
 
-      if (!existingEntry || entry.createdAt >= existingEntry.createdAt) {
+      if (
+        !existingEntry ||
+        getServiceEntryUpdatedAt(entry) >= getServiceEntryUpdatedAt(existingEntry)
+      ) {
         entriesByMemberDate.set(key, entry);
       }
     }
@@ -431,6 +442,17 @@ export function MemberManager() {
     const today = new Date().toLocaleDateString("en-CA");
     return serviceEntries.filter((entry) => entry.serviceDate === today).length;
   }, [serviceEntries]);
+  const serviceEntriesForCalendarMonth = useMemo(
+    () =>
+      serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${calendarMonth}-`)),
+    [calendarMonth, serviceEntries]
+  );
+  const claimsForClaimsMonth = useMemo(
+    () => claims.filter((claim) => claim.serviceDate.startsWith(`${claimsMonth}-`)),
+    [claims, claimsMonth]
+  );
+  const isClaimsMonthLoading =
+    isMonthLoading || !loadedDataMonths.has(claimsMonth);
 
   const recordedServiceDatesForMember = useMemo(() => {
     if (!serviceForm.memberId) {
@@ -478,10 +500,14 @@ export function MemberManager() {
       return [];
     }
 
-    return Object.entries(statusOverrides).flatMap(([serviceDate, status]) => {
-      const entry = serviceEntryByMemberDate.get(
-        getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)
-      );
+    return Object.entries(statusOverrides).flatMap(([overrideKey, status]) => {
+      const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+      const entry = serviceEntryByMemberDate.get(overrideKey);
+
+      if (!serviceDate || !entry || entry.memberId !== serviceForm.memberId) {
+        return [];
+      }
+
       return entry && entry.serviceLabel !== status ? [{ entry, status }] : [];
     });
   }, [serviceEntryByMemberDate, serviceForm.memberId, statusOverrides]);
@@ -517,13 +543,19 @@ export function MemberManager() {
   );
 
   const serviceDatesToCreate = useMemo(() => {
-    return Object.entries(dateOverrides).flatMap(([serviceDate, override]) => {
+    return Object.entries(dateOverrides).flatMap(([overrideKey, override]) => {
+      const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+      if (!serviceDate || !overrideKey.startsWith(`${serviceForm.memberId}:`)) {
+        return [];
+      }
+
       if (override.action !== "add" || recordedServiceDatesForMember.has(serviceDate)) {
         return [];
       }
       return [{ serviceDate, status: override.status }];
     });
-  }, [dateOverrides, recordedServiceDatesForMember]);
+  }, [dateOverrides, recordedServiceDatesForMember, serviceForm.memberId]);
 
   const newStatusByDateForMonth = useMemo(() => {
     const map = new Map<string, string>();
@@ -544,10 +576,13 @@ export function MemberManager() {
 
     return Object.entries(dateOverrides)
       .filter(([, override]) => override.action === "remove")
-      .flatMap(([serviceDate]) => {
-        const entry = serviceEntryByMemberDate.get(
-          getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)
-        );
+      .flatMap(([overrideKey]) => {
+        const entry = serviceEntryByMemberDate.get(overrideKey);
+
+        if (!entry || entry.memberId !== serviceForm.memberId) {
+          return [];
+        }
+
         return entry ? [entry] : [];
       });
   }, [dateOverrides, serviceEntryByMemberDate, serviceForm.memberId]);
@@ -556,19 +591,27 @@ export function MemberManager() {
     const dates = new Set<string>();
 
     for (const serviceDate of recordedServiceDatesForMemberMonth) {
-      if (dateOverrides[serviceDate]?.action !== "remove") {
+      const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
+
+      if (dateOverrides[overrideKey]?.action !== "remove") {
         dates.add(serviceDate);
       }
     }
 
-    for (const [serviceDate, override] of Object.entries(dateOverrides)) {
+    for (const [overrideKey, override] of Object.entries(dateOverrides)) {
+      const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+      if (!serviceDate || !overrideKey.startsWith(`${serviceForm.memberId}:`)) {
+        continue;
+      }
+
       if (override.action === "add" && serviceDate.startsWith(`${calendarMonth}-`)) {
         dates.add(serviceDate);
       }
     }
 
     return Array.from(dates).sort();
-  }, [calendarMonth, dateOverrides, recordedServiceDatesForMemberMonth]);
+  }, [calendarMonth, dateOverrides, recordedServiceDatesForMemberMonth, serviceForm.memberId]);
 
   const serviceChangeCount =
     serviceDatesToCreate.length + entriesToDelete.length + pendingStatusChanges.length;
@@ -590,25 +633,28 @@ export function MemberManager() {
   );
   const servicePageCount = Math.max(
     1,
-    Math.ceil(serviceEntries.length / servicePageSize)
+    Math.ceil(serviceEntriesForCalendarMonth.length / servicePageSize)
   );
   const safeServicePage = Math.min(servicePage, servicePageCount - 1);
-  const visibleServiceEntries = serviceEntries.slice(
+  const visibleServiceEntries = serviceEntriesForCalendarMonth.slice(
     safeServicePage * servicePageSize,
     safeServicePage * servicePageSize + servicePageSize
   );
   const recentlyUpdatedServiceEntries = useMemo(
     () =>
-      [...serviceEntries]
+      [...serviceEntriesForCalendarMonth]
         .sort((left, right) =>
           getServiceEntryUpdatedAt(right).localeCompare(getServiceEntryUpdatedAt(left))
         )
         .slice(0, 5),
-    [serviceEntries]
+    [serviceEntriesForCalendarMonth]
   );
   const selectedServiceEntries = useMemo(
-    () => serviceEntries.filter((entry) => selectedServiceEntryIds.has(entry.id)),
-    [selectedServiceEntryIds, serviceEntries]
+    () =>
+      serviceEntriesForCalendarMonth.filter((entry) =>
+        selectedServiceEntryIds.has(entry.id)
+      ),
+    [selectedServiceEntryIds, serviceEntriesForCalendarMonth]
   );
   const areAllVisibleServicesSelected =
     visibleServiceEntries.length > 0 &&
@@ -798,50 +844,104 @@ export function MemberManager() {
     return requiresChallenge;
   }
 
-  async function loadDashboard(preferredServiceMemberId = serviceForm.memberId) {
+  async function loadDashboard(
+    preferredServiceMemberId = serviceForm.memberId,
+    month = calendarMonth
+  ) {
     if (!supabase) {
       return;
     }
 
     setIsLoading(true);
     setBusyMessage("Loading dashboard data...");
+    const monthRange = getMonthDateRange(month);
 
-    const membersRequest = supabase
-      .from("members")
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
-      .order("display_name", { ascending: true });
+    try {
+      const membersRequest = supabase
+        .from("members")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+        .order("display_name", { ascending: true });
 
-    const [membersResult, servicesResult, claimsResult] = await Promise.all([
-      membersRequest,
-      fetchAllServiceEntries(supabase),
-      fetchAllClaims(supabase),
-    ]);
+      const [membersResult, servicesResult, claimsResult] = await Promise.all([
+        membersRequest,
+        fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+        fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+      ]);
 
-    if (membersResult.error) {
-      showError(membersResult.error.message);
-    } else {
-      const nextMembers = membersResult.data.map(mapMemberRow);
-      setMembers(nextMembers);
-      const nextMemberId = preferredServiceMemberId || nextMembers[0]?.id || "";
-      setServiceForm((currentForm) => ({
-        ...currentForm,
-        memberId: preferredServiceMemberId || currentForm.memberId || nextMemberId,
-      }));
+      if (membersResult.error) {
+        showError(membersResult.error.message);
+      } else {
+        const nextMembers = membersResult.data.map(mapMemberRow);
+        setMembers(nextMembers);
+        const nextMemberId = preferredServiceMemberId || nextMembers[0]?.id || "";
+        setServiceForm((currentForm) => ({
+          ...currentForm,
+          memberId: preferredServiceMemberId || currentForm.memberId || nextMemberId,
+        }));
+      }
+
+      if (servicesResult.error) {
+        showError(servicesResult.error.message);
+      } else {
+        setServiceEntries((currentEntries) =>
+          replaceServiceEntriesForMonth(currentEntries, month, servicesResult.data)
+        );
+      }
+
+      if (claimsResult.error) {
+        setClaims((currentClaims) => replaceClaimsForMonth(currentClaims, month, []));
+      } else {
+        setClaims((currentClaims) =>
+          replaceClaimsForMonth(currentClaims, month, claimsResult.data)
+        );
+      }
+
+      if (!servicesResult.error && !claimsResult.error) {
+        setLoadedDataMonths((currentMonths) => new Set(currentMonths).add(month));
+      }
+    } finally {
+      setIsLoading(false);
+      setBusyMessage(null);
+    }
+  }
+
+  async function refreshMonthData(month: string) {
+    if (!supabase) {
+      return;
     }
 
-    if (servicesResult.error) {
-      showError(servicesResult.error.message);
-    } else {
-      setServiceEntries(getCanonicalServiceEntries(servicesResult.data));
-    }
+    setIsMonthLoading(true);
+    setBusyMessage(`Loading ${formatMonthLabel(month)} data...`);
+    const monthRange = getMonthDateRange(month);
+    try {
+      const [servicesResult, claimsResult] = await Promise.all([
+        fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+        fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+      ]);
 
-    if (claimsResult.error) {
-      setClaims([]);
-    } else {
-      setClaims(claimsResult.data);
-    }
+      if (servicesResult.error) {
+        showError(servicesResult.error.message);
+      } else {
+        setServiceEntries((currentEntries) =>
+          replaceServiceEntriesForMonth(currentEntries, month, servicesResult.data)
+        );
+      }
 
-    setIsLoading(false);
+      if (claimsResult.error) {
+        showError(claimsResult.error.message);
+      } else {
+        setClaims((currentClaims) =>
+          replaceClaimsForMonth(currentClaims, month, claimsResult.data)
+        );
+      }
+
+      if (!servicesResult.error && !claimsResult.error) {
+        setLoadedDataMonths((currentMonths) => new Set(currentMonths).add(month));
+      }
+    } finally {
+      setIsMonthLoading(false);
+      setBusyMessage(null);
+    }
   }
 
   useEffect(() => {
@@ -852,6 +952,35 @@ export function MemberManager() {
     // The dashboard should load once per auth session. Month/member changes are local form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, session]);
+
+  useEffect(() => {
+    if (
+      activeView !== "claims" ||
+      !session ||
+      !hasMfaFactor ||
+      isMfaChallengeRequired ||
+      isMfaChecking
+    ) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshMonthData(claimsMonth);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+    // Claims review must be based on a fresh month snapshot when the tab opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeView,
+    claimsMonth,
+    hasMfaFactor,
+    isMfaChallengeRequired,
+    isMfaChecking,
+    session,
+  ]);
 
   const loadSecurityEvents = useCallback(async () => {
     if (!supabase) {
@@ -1157,19 +1286,21 @@ export function MemberManager() {
         ? await supabase.from("service_entries").delete().in("id", serviceIdsToDelete)
         : { error: null };
 
+    const savedAt = new Date().toISOString();
     const insertResult =
       datesToCreate.length > 0
         ? await supabase
           .from("service_entries")
           .upsert(
-            datesToCreate.map(({ serviceDate, status }) =>
-              toServiceEntryInsert({
+            datesToCreate.map(({ serviceDate, status }) => ({
+              ...toServiceEntryInsert({
                 memberId: serviceForm.memberId,
                 serviceDate,
                 serviceLabel: status,
-              })
-            ),
-            { ignoreDuplicates: true, onConflict: "member_id,service_date" }
+              }),
+              updated_at: savedAt,
+            })),
+            { onConflict: "member_id,service_date" }
           )
         : { error: null };
 
@@ -1193,10 +1324,6 @@ export function MemberManager() {
         "Service dates could not be saved."
       );
     } else {
-      const updatedEntries = updateResults
-        .map((result) => result.data)
-        .filter((row): row is NonNullable<typeof row> => Boolean(row))
-        .map(mapServiceEntryRow);
       const monthRange = getMonthDateRange(calendarMonth);
       const refreshedMonthResult = await fetchServiceEntriesInRange(
         supabase,
@@ -1210,41 +1337,57 @@ export function MemberManager() {
         return;
       }
 
-      const refreshedMemberMonthEntries = refreshedMonthResult.data.filter(
-        (entry) => entry.memberId === serviceForm.memberId
+      const verificationError = getServiceSaveVerificationError(
+        refreshedMonthResult.data,
+        serviceForm.memberId,
+        datesToCreate,
+        entriesToDelete,
+        statusChangesToApply
       );
 
       setServiceEntries((currentEntries) =>
-        getCanonicalServiceEntries([
-          ...currentEntries.filter((entry) => {
-            if (serviceIdsToDelete.includes(entry.id)) {
-              return false;
-            }
-
-            if (
-              entry.memberId === serviceForm.memberId &&
-              entry.serviceDate.startsWith(`${calendarMonth}-`)
-            ) {
-              return false;
-            }
-
-            return !updatedEntries.some((updatedEntry) => updatedEntry.id === entry.id);
-          }),
-          ...refreshedMemberMonthEntries,
-          ...updatedEntries,
-        ])
+        replaceServiceEntriesForMonth(currentEntries, calendarMonth, refreshedMonthResult.data)
       );
+
+      if (verificationError) {
+        showError(verificationError);
+        setIsSaving(false);
+        return;
+      }
+
+      const claimSyncResult = await reconcileSafeClaimsForServiceChanges(
+        supabase,
+        serviceForm.memberId,
+        calendarMonth,
+        datesToCreate,
+        entriesToDelete,
+        statusChangesToApply
+      );
+
+      if (claimSyncResult.error) {
+        showError(claimSyncResult.error);
+        setIsSaving(false);
+        return;
+      }
+
+      setClaims((currentClaims) =>
+        replaceClaimsForMonth(currentClaims, calendarMonth, claimSyncResult.claims)
+      );
+
       setDateOverrides((currentOverrides) => {
-        const nextOverrides = { ...currentOverrides };
-        for (const { serviceDate } of datesToCreate) {
-          delete nextOverrides[serviceDate];
-        }
-        for (const entry of entriesToDelete) {
-          delete nextOverrides[entry.serviceDate];
-        }
-        return nextOverrides;
+        return clearCalendarOverridesForMemberMonth(
+          currentOverrides,
+          serviceForm.memberId,
+          calendarMonth
+        );
       });
-      setStatusOverrides({});
+      setStatusOverrides((currentOverrides) =>
+        clearCalendarOverridesForMemberMonth(
+          currentOverrides,
+          serviceForm.memberId,
+          calendarMonth
+        )
+      );
       await recordAuditEvent({
         action: "service_calendar_saved",
         entityType: "service",
@@ -1256,6 +1399,8 @@ export function MemberManager() {
           added: datesToCreate.length,
           removed: entriesToDelete.length,
           statusChanged: statusChangesToApply.length,
+          claimsCreated: claimSyncResult.created,
+          claimsRemoved: claimSyncResult.removed,
           addedDates: datesToCreate.map((item) => item.serviceDate),
           removedDates: entriesToDelete.map((entry) => entry.serviceDate),
           statusChanges: statusChangesToApply.map(({ entry, status }) => ({
@@ -1358,10 +1503,19 @@ export function MemberManager() {
       return;
     }
 
-    const refreshedRangeResult = await fetchServiceEntriesInRange(supabase, start, end);
+    const [refreshedRangeResult, refreshedMonthResult] = await Promise.all([
+      fetchServiceEntriesInRange(supabase, start, end),
+      fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+    ]);
 
     if (refreshedRangeResult.error) {
       showError(refreshedRangeResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    if (refreshedMonthResult.error) {
+      showError(refreshedMonthResult.error.message);
       setIsSaving(false);
       return;
     }
@@ -1373,9 +1527,10 @@ export function MemberManager() {
     const addedCount = refreshedRangeEntries.filter(
       (entry) => !freshExistingKeys.has(`${entry.memberId}:${entry.serviceDate}`)
     ).length;
+    const monthTotal = refreshedMonthResult.data.length;
 
     setServiceEntries((currentEntries) =>
-      getCanonicalServiceEntries([...currentEntries, ...refreshedRangeEntries])
+      replaceServiceEntriesForMonth(currentEntries, calendarMonth, refreshedMonthResult.data)
     );
 
     await recordAuditEvent({
@@ -1387,10 +1542,14 @@ export function MemberManager() {
         start,
         end,
         added: addedCount,
+        month: calendarMonth,
+        monthTotal,
       },
     });
     showInfo(
-      `Added ${addedCount} service ${addedCount === 1 ? "entry" : "entries"}.`
+      `Added ${addedCount} service ${
+        addedCount === 1 ? "entry" : "entries"
+      }. ${monthTotal} recorded in ${formatMonthLabel(calendarMonth)}.`
     );
     setIsSaving(false);
   }
@@ -1463,24 +1622,25 @@ export function MemberManager() {
   }
 
   function handleStatusOverrideToggle(serviceDate: string) {
+    const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
     const recordedStatus = recordedStatusByDateForMemberMonth.get(serviceDate) ?? "Attended";
     const targetStatus = serviceForm.serviceLabel;
 
     setDateOverrides((currentOverrides) => {
-      if (currentOverrides[serviceDate]?.action !== "remove") {
+      if (currentOverrides[overrideKey]?.action !== "remove") {
         return currentOverrides;
       }
       const nextOverrides = { ...currentOverrides };
-      delete nextOverrides[serviceDate];
+      delete nextOverrides[overrideKey];
       return nextOverrides;
     });
 
     setStatusOverrides((currentOverrides) => {
-      const pending = currentOverrides[serviceDate];
+      const pending = currentOverrides[overrideKey];
 
       if (pending === targetStatus) {
         const nextOverrides = { ...currentOverrides };
-        delete nextOverrides[serviceDate];
+        delete nextOverrides[overrideKey];
         return nextOverrides;
       }
 
@@ -1488,14 +1648,16 @@ export function MemberManager() {
         return currentOverrides;
       }
 
-      return { ...currentOverrides, [serviceDate]: targetStatus };
+      return { ...currentOverrides, [overrideKey]: targetStatus };
     });
   }
 
   function cancelStatusOverride(serviceDate: string) {
+    const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
+
     setStatusOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      delete nextOverrides[serviceDate];
+      delete nextOverrides[overrideKey];
       return nextOverrides;
     });
   }
@@ -1541,6 +1703,8 @@ export function MemberManager() {
     setCalendarMonth(month);
     setDateOverrides({});
     setStatusOverrides({});
+    setServicePage(0);
+    void refreshMonthData(month);
     if (serviceForm.memberId) {
       void refreshServiceCalendarMonth(serviceForm.memberId, month);
     }
@@ -1550,6 +1714,23 @@ export function MemberManager() {
     setSummaryMonth(month);
     setSelectedSummaryDate(getDefaultDateForMonth(month));
     setSummaryAttendeesPage(0);
+    void refreshMonthData(month);
+  }
+
+  function handleClaimsMonthChange(month: string) {
+    setClaimsMonth(month);
+    void refreshMonthData(month);
+  }
+
+  function handleMemberDetailMonthChange(month: string) {
+    setMemberDetailMonth(month);
+    void refreshMonthData(month);
+  }
+
+  function handleClaimsForMonthChange(nextClaims: Claim[]) {
+    setClaims((currentClaims) =>
+      replaceClaimsForMonth(currentClaims, claimsMonth, nextClaims)
+    );
   }
 
   function resetExpectedServiceDates() {
@@ -1562,7 +1743,10 @@ export function MemberManager() {
     setDateOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
       for (const serviceDate of expectedDates) {
-        nextOverrides[serviceDate] = { action: "add", status: serviceForm.serviceLabel };
+        nextOverrides[getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)] = {
+          action: "add",
+          status: serviceForm.serviceLabel,
+        };
       }
       return nextOverrides;
     });
@@ -1577,21 +1761,22 @@ export function MemberManager() {
   function toggleSelectedServiceDate(serviceDate: string) {
     const isRecorded = recordedServiceDatesForMember.has(serviceDate);
     const targetStatus = serviceForm.serviceLabel;
+    const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
 
     setDateOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      const existing = nextOverrides[serviceDate];
+      const existing = nextOverrides[overrideKey];
 
       if (isRecorded) {
         if (existing?.action === "remove") {
-          delete nextOverrides[serviceDate];
+          delete nextOverrides[overrideKey];
         } else {
-          nextOverrides[serviceDate] = { action: "remove" };
+          nextOverrides[overrideKey] = { action: "remove" };
         }
       } else if (existing?.action === "add" && existing.status === targetStatus) {
-        delete nextOverrides[serviceDate];
+        delete nextOverrides[overrideKey];
       } else {
-        nextOverrides[serviceDate] = { action: "add", status: targetStatus };
+        nextOverrides[overrideKey] = { action: "add", status: targetStatus };
       }
 
       return nextOverrides;
@@ -1599,9 +1784,11 @@ export function MemberManager() {
   }
 
   function cancelDateOverride(serviceDate: string) {
+    const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
+
     setDateOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      delete nextOverrides[serviceDate];
+      delete nextOverrides[overrideKey];
       return nextOverrides;
     });
   }
@@ -1610,23 +1797,32 @@ export function MemberManager() {
     setDateOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
       for (const serviceDate of recordedServiceDatesForMemberMonth) {
-        nextOverrides[serviceDate] = { action: "remove" };
+        nextOverrides[getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate)] = {
+          action: "remove",
+        };
       }
-      for (const serviceDate of Object.keys(nextOverrides)) {
+      for (const overrideKey of Object.keys(nextOverrides)) {
+        const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
         if (
-          serviceDate.startsWith(`${calendarMonth}-`) &&
-          nextOverrides[serviceDate]?.action === "add"
+          overrideKey.startsWith(`${serviceForm.memberId}:`) &&
+          serviceDate?.startsWith(`${calendarMonth}-`) &&
+          nextOverrides[overrideKey]?.action === "add"
         ) {
-          delete nextOverrides[serviceDate];
+          delete nextOverrides[overrideKey];
         }
       }
       return nextOverrides;
     });
     setStatusOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      for (const serviceDate of Object.keys(nextOverrides)) {
-        if (serviceDate.startsWith(`${calendarMonth}-`)) {
-          delete nextOverrides[serviceDate];
+      for (const overrideKey of Object.keys(nextOverrides)) {
+        const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+        if (
+          overrideKey.startsWith(`${serviceForm.memberId}:`) &&
+          serviceDate?.startsWith(`${calendarMonth}-`)
+        ) {
+          delete nextOverrides[overrideKey];
         }
       }
       return nextOverrides;
@@ -1636,18 +1832,28 @@ export function MemberManager() {
   function resetAllEdits() {
     setDateOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      for (const serviceDate of Object.keys(nextOverrides)) {
-        if (serviceDate.startsWith(`${calendarMonth}-`)) {
-          delete nextOverrides[serviceDate];
+      for (const overrideKey of Object.keys(nextOverrides)) {
+        const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+        if (
+          overrideKey.startsWith(`${serviceForm.memberId}:`) &&
+          serviceDate?.startsWith(`${calendarMonth}-`)
+        ) {
+          delete nextOverrides[overrideKey];
         }
       }
       return nextOverrides;
     });
     setStatusOverrides((currentOverrides) => {
       const nextOverrides = { ...currentOverrides };
-      for (const serviceDate of Object.keys(nextOverrides)) {
-        if (serviceDate.startsWith(`${calendarMonth}-`)) {
-          delete nextOverrides[serviceDate];
+      for (const overrideKey of Object.keys(nextOverrides)) {
+        const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+        if (
+          overrideKey.startsWith(`${serviceForm.memberId}:`) &&
+          serviceDate?.startsWith(`${calendarMonth}-`)
+        ) {
+          delete nextOverrides[overrideKey];
         }
       }
       return nextOverrides;
@@ -2153,6 +2359,121 @@ export function MemberManager() {
     setIsSaving(false);
   }
 
+  async function confirmResetMonthData() {
+    if (!supabase || monthResetConfirmation.trim().toUpperCase() !== "RESET") {
+      return;
+    }
+
+    const monthRange = getMonthDateRange(calendarMonth);
+    const serviceCount = serviceEntriesForCalendarMonth.length;
+    const claimCount = claims.filter((claim) =>
+      claim.serviceDate.startsWith(`${calendarMonth}-`)
+    ).length;
+
+    setIsSaving(true);
+    setBusyMessage(`Resetting ${formatMonthLabel(calendarMonth)} services and claims...`);
+
+    const claimsResult = await supabase
+      .from("claims")
+      .delete()
+      .gte("service_date", monthRange.start)
+      .lte("service_date", monthRange.end);
+
+    if (claimsResult.error) {
+      showError(claimsResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const servicesResult = await supabase
+      .from("service_entries")
+      .delete()
+      .gte("service_date", monthRange.start)
+      .lte("service_date", monthRange.end);
+
+    if (servicesResult.error) {
+      showError(servicesResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const [remainingServicesResult, remainingClaimsResult] = await Promise.all([
+      fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+      fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+    ]);
+
+    if (remainingServicesResult.error || remainingClaimsResult.error) {
+      showError(
+        remainingServicesResult.error?.message ||
+          remainingClaimsResult.error?.message ||
+          "Could not verify the month reset."
+      );
+      setIsSaving(false);
+      return;
+    }
+
+    if (remainingServicesResult.data.length > 0 || remainingClaimsResult.data.length > 0) {
+      setServiceEntries((currentEntries) =>
+        replaceServiceEntriesForMonth(
+          currentEntries,
+          calendarMonth,
+          remainingServicesResult.data
+        )
+      );
+      setClaims((currentClaims) =>
+        replaceClaimsForMonth(currentClaims, calendarMonth, remainingClaimsResult.data)
+      );
+      showError(
+        `Reset did not fully clear ${formatMonthLabel(calendarMonth)}. ${
+          remainingServicesResult.data.length
+        } service ${remainingServicesResult.data.length === 1 ? "entry remains" : "entries remain"} and ${
+          remainingClaimsResult.data.length
+        } claim${remainingClaimsResult.data.length === 1 ? " remains" : "s remain"}.`
+      );
+      setIsSaving(false);
+      return;
+    }
+
+    setServiceEntries((currentEntries) =>
+      replaceServiceEntriesForMonth(currentEntries, calendarMonth, [])
+    );
+    setClaims((currentClaims) => replaceClaimsForMonth(currentClaims, calendarMonth, []));
+    setLoadedDataMonths((currentMonths) => new Set(currentMonths).add(calendarMonth));
+    setDateOverrides((currentOverrides) =>
+      clearCalendarOverridesForMemberMonth(
+        currentOverrides,
+        serviceForm.memberId,
+        calendarMonth
+      )
+    );
+    setStatusOverrides((currentOverrides) =>
+      clearCalendarOverridesForMemberMonth(
+        currentOverrides,
+        serviceForm.memberId,
+        calendarMonth
+      )
+    );
+    setSelectedServiceEntryIds(new Set());
+    setIsMonthResetOpen(false);
+    setMonthResetConfirmation("");
+    await recordAuditEvent({
+      action: "month_reset",
+      entityType: "service",
+      summary: `Reset services and claims for ${formatMonthLabel(calendarMonth)}.`,
+      metadata: {
+        month: calendarMonth,
+        claimsDeleted: claimCount,
+        servicesDeleted: serviceCount,
+      },
+    });
+    showInfo(
+      `Reset ${formatMonthLabel(calendarMonth)}: deleted ${serviceCount} service ${
+        serviceCount === 1 ? "entry" : "entries"
+      } and ${claimCount} claim${claimCount === 1 ? "" : "s"}.`
+    );
+    setIsSaving(false);
+  }
+
   if (!hasSupabaseConfig) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
@@ -2396,7 +2717,7 @@ export function MemberManager() {
   }
 
   const activeBusyMessage =
-    isLoading || isSaving
+    isLoading || isSaving || isMonthLoading
       ? busyMessage ?? (isLoading ? "Loading dashboard data..." : "Working...")
       : null;
 
@@ -2658,9 +2979,9 @@ export function MemberManager() {
                         : activeView === "audit"
                           ? "Recent system activity"
                           : activeView === "services"
-                            ? `${serviceEntries.length} recorded`
+                            ? `${serviceEntriesForCalendarMonth.length} recorded`
                             : activeView === "claims"
-                              ? "Claim submission tracking"
+                              ? `${claimsForClaimsMonth.length} claims this month`
                               : `${activeMembers.length} total`}
                 </p>
               </div>
@@ -2701,9 +3022,15 @@ export function MemberManager() {
               <AuditLog />
             ) : activeView === "claims" ? (
               <ClaimsDashboard
+                claims={claimsForClaimsMonth}
+                isLoading={isClaimsMonthLoading}
                 memberById={memberById}
                 members={activeMembers}
+                month={claimsMonth}
                 onAudit={recordAuditEvent}
+                onClaimsChange={handleClaimsForMonthChange}
+                onMonthChange={handleClaimsMonthChange}
+                onMonthDataRefresh={refreshMonthData}
                 serviceEntries={serviceEntries}
               />
             ) : activeView === "member" && selectedMember ? (
@@ -2716,7 +3043,7 @@ export function MemberManager() {
                   editMember(member);
                   setActiveView("members");
                 }}
-                onMonthChange={setMemberDetailMonth}
+                onMonthChange={handleMemberDetailMonthChange}
                 serviceEntries={serviceEntries}
               />
             ) : activeView === "services" ? (
@@ -2748,17 +3075,29 @@ export function MemberManager() {
                       <CalendarClockIcon data-icon="inline-start" />
                       Through today
                     </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={isSaving}
-                      onClick={() => handleBulkFillServices("month")}
+	                    <Button
+	                      type="button"
+	                      variant="outline"
+	                      disabled={isSaving}
+	                      onClick={() => handleBulkFillServices("month")}
                     >
-                      <CalendarDaysIcon data-icon="inline-start" />
-                      Whole month
-                    </Button>
-                  </CardContent>
-                </Card>
+	                      <CalendarDaysIcon data-icon="inline-start" />
+	                      Whole month
+	                    </Button>
+	                    <Button
+	                      type="button"
+	                      variant="destructive"
+	                      disabled={isSaving}
+	                      onClick={() => {
+	                        setMonthResetConfirmation("");
+	                        setIsMonthResetOpen(true);
+	                      }}
+	                    >
+	                      <Trash2Icon data-icon="inline-start" />
+	                      Reset month
+	                    </Button>
+	                  </CardContent>
+	                </Card>
 
                 <Card>
                   <CardHeader>
@@ -3135,7 +3474,7 @@ export function MemberManager() {
                         <Loader2Icon data-icon="inline-start" />
                         Loading services
                       </div>
-                    ) : serviceEntries.length === 0 ? (
+                    ) : serviceEntriesForCalendarMonth.length === 0 ? (
                       <div className="flex min-h-44 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
                         <h3 className="font-medium">No services recorded</h3>
                         <p className="max-w-sm text-sm text-muted-foreground">
@@ -3820,6 +4159,62 @@ export function MemberManager() {
       </AlertDialog>
 
       <AlertDialog
+        open={isMonthResetOpen}
+        onOpenChange={(open) => {
+          setIsMonthResetOpen(open);
+          if (!open) {
+            setMonthResetConfirmation("");
+          }
+        }}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset this month?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes all services and claims for {formatMonthLabel(calendarMonth)}.
+              Members stay active, but the month&apos;s attendance and claim queue will be empty.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Services</span>
+              <span className="font-medium">{serviceEntriesForCalendarMonth.length}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Claims</span>
+              <span className="font-medium">
+                {
+                  claims.filter((claim) =>
+                    claim.serviceDate.startsWith(`${calendarMonth}-`)
+                  ).length
+                }
+              </span>
+            </div>
+            <Field label='Type "RESET" to confirm' htmlFor="month-reset-confirmation">
+              <Input
+                id="month-reset-confirmation"
+                autoComplete="off"
+                value={monthResetConfirmation}
+                onChange={(event) => setMonthResetConfirmation(event.target.value)}
+              />
+            </Field>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep month</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmResetMonthData}
+              disabled={
+                isSaving || monthResetConfirmation.trim().toUpperCase() !== "RESET"
+              }
+            >
+              Reset month
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
           if (!open) {
@@ -4001,6 +4396,32 @@ function getServiceEntryMemberDateKey(memberId: string, serviceDate: string) {
   return `${memberId}:${serviceDate}`;
 }
 
+function getServiceDateFromMemberDateKey(key: string) {
+  const [, serviceDate] = key.split(":");
+  return serviceDate || "";
+}
+
+function clearCalendarOverridesForMemberMonth<T>(
+  overrides: Record<string, T>,
+  memberId: string,
+  month: string
+) {
+  const nextOverrides = { ...overrides };
+
+  for (const overrideKey of Object.keys(nextOverrides)) {
+    const serviceDate = getServiceDateFromMemberDateKey(overrideKey);
+
+    if (
+      overrideKey.startsWith(`${memberId}:`) &&
+      serviceDate.startsWith(`${month}-`)
+    ) {
+      delete nextOverrides[overrideKey];
+    }
+  }
+
+  return nextOverrides;
+}
+
 function getServiceEntryUpdatedAt(entry: ServiceEntry) {
   return entry.updatedAt || entry.createdAt;
 }
@@ -4026,8 +4447,195 @@ function getCanonicalServiceEntries(entries: ServiceEntry[]) {
 
   return Array.from(entriesByMemberDate.values()).sort((left, right) => {
     const dateSort = right.serviceDate.localeCompare(left.serviceDate);
-    return dateSort || right.createdAt.localeCompare(left.createdAt);
+    const createdAtSort = right.createdAt.localeCompare(left.createdAt);
+
+    return dateSort || createdAtSort || right.id.localeCompare(left.id);
   });
+}
+
+function replaceServiceEntriesForMonth(
+  currentEntries: ServiceEntry[],
+  month: string,
+  nextEntries: ServiceEntry[]
+) {
+  return getCanonicalServiceEntries([
+    ...currentEntries.filter((entry) => !entry.serviceDate.startsWith(`${month}-`)),
+    ...nextEntries,
+  ]);
+}
+
+function replaceClaimsForMonth(
+  currentClaims: Claim[],
+  month: string,
+  nextClaims: Claim[]
+) {
+  return getCanonicalClaims([
+    ...currentClaims.filter((claim) => !claim.serviceDate.startsWith(`${month}-`)),
+    ...nextClaims,
+  ]);
+}
+
+function getCanonicalClaims(claims: Claim[]) {
+  const claimsById = new Map<string, Claim>();
+
+  for (const claim of claims) {
+    const existingClaim = claimsById.get(claim.id);
+
+    if (!existingClaim || existingClaim.updatedAt <= claim.updatedAt) {
+      claimsById.set(claim.id, claim);
+    }
+  }
+
+  return Array.from(claimsById.values()).sort((left, right) => {
+    const dateSort = right.serviceDate.localeCompare(left.serviceDate);
+
+    return dateSort || right.id.localeCompare(left.id);
+  });
+}
+
+function formatMonthLabel(month: string) {
+  return new Date(`${month}-01T00:00:00`).toLocaleDateString([], {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+async function reconcileSafeClaimsForServiceChanges(
+  supabaseClient: SupabaseClient,
+  memberId: string,
+  month: string,
+  datesToCreate: Array<{ serviceDate: string; status: string }>,
+  entriesToDelete: ServiceEntry[],
+  statusChangesToApply: Array<{ entry: ServiceEntry; status: string }>
+) {
+  const staleClaimDates = new Set<string>();
+  const requiredClaimDates = new Set<string>();
+
+  for (const entry of entriesToDelete) {
+    staleClaimDates.add(entry.serviceDate);
+  }
+
+  for (const { entry, status } of statusChangesToApply) {
+    if (status.toLowerCase() === "attended") {
+      requiredClaimDates.add(entry.serviceDate);
+    } else {
+      staleClaimDates.add(entry.serviceDate);
+    }
+  }
+
+  for (const { serviceDate, status } of datesToCreate) {
+    if (status.toLowerCase() === "attended") {
+      requiredClaimDates.add(serviceDate);
+    }
+  }
+
+  for (const serviceDate of staleClaimDates) {
+    requiredClaimDates.delete(serviceDate);
+  }
+
+  const staleDates = Array.from(staleClaimDates);
+  const requiredDates = Array.from(requiredClaimDates);
+  const deleteResult =
+    staleDates.length > 0
+      ? await supabaseClient
+        .from("claims")
+        .delete()
+        .eq("member_id", memberId)
+        .in("service_date", staleDates)
+        .in("status", ["Required", "Pending"])
+      : { error: null };
+
+  if (deleteResult.error) {
+    return {
+      claims: [] as Claim[],
+      created: 0,
+      error: deleteResult.error.message,
+      removed: 0,
+    };
+  }
+
+  const insertResult =
+    requiredDates.length > 0
+      ? await supabaseClient
+        .from("claims")
+        .upsert(
+          requiredDates.map((serviceDate) =>
+            toClaimInsert({
+              memberId,
+              serviceDate,
+              status: "Required",
+              lastFailureReason: "",
+            })
+          ),
+          { ignoreDuplicates: true, onConflict: "member_id,service_date" }
+        )
+      : { error: null };
+
+  if (insertResult.error) {
+    return {
+      claims: [] as Claim[],
+      created: 0,
+      error: insertResult.error.message,
+      removed: 0,
+    };
+  }
+
+  const monthRange = getMonthDateRange(month);
+  const claimsResult = await fetchClaimsInRange(
+    supabaseClient,
+    monthRange.start,
+    monthRange.end
+  );
+
+  return {
+    claims: claimsResult.data,
+    created: requiredDates.length,
+    error: claimsResult.error?.message ?? null,
+    removed: staleDates.length,
+  };
+}
+
+function getServiceSaveVerificationError(
+  refreshedEntries: ServiceEntry[],
+  memberId: string,
+  datesToCreate: Array<{ serviceDate: string; status: string }>,
+  entriesToDelete: ServiceEntry[],
+  statusChangesToApply: Array<{ entry: ServiceEntry; status: string }>
+) {
+  const refreshedEntryByDate = new Map(
+    refreshedEntries
+      .filter((entry) => entry.memberId === memberId)
+      .map((entry) => [entry.serviceDate, entry])
+  );
+  const failedAdds = datesToCreate.filter((item) => {
+    const refreshedEntry = refreshedEntryByDate.get(item.serviceDate);
+    return !refreshedEntry || refreshedEntry.serviceLabel !== item.status;
+  });
+  const failedDeletes = entriesToDelete.filter((entry) =>
+    refreshedEntryByDate.has(entry.serviceDate)
+  );
+  const failedStatusChanges = statusChangesToApply.filter(({ entry, status }) => {
+    const refreshedEntry = refreshedEntryByDate.get(entry.serviceDate);
+    return !refreshedEntry || refreshedEntry.serviceLabel !== status;
+  });
+
+  if (
+    failedAdds.length === 0 &&
+    failedDeletes.length === 0 &&
+    failedStatusChanges.length === 0
+  ) {
+    return null;
+  }
+
+  const failedDates = [
+    ...failedAdds.map((item) => item.serviceDate),
+    ...failedDeletes.map((entry) => entry.serviceDate),
+    ...failedStatusChanges.map(({ entry }) => entry.serviceDate),
+  ];
+
+  return `Some service dates did not save after refresh: ${failedDates.slice(0, 5).join(", ")}${
+    failedDates.length > 5 ? ` and ${failedDates.length - 5} more` : ""
+  }.`;
 }
 
 function storeFailedSignInState(state: FailedSignInState) {

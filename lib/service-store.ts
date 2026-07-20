@@ -86,6 +86,7 @@ async function fetchServiceEntriesPageByPage(
       .select(serviceEntrySelectColumns)
       .order("service_date", { ascending: false })
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .range(from, to);
 
     if (startDate) {

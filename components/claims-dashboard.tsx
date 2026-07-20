@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, FormEvent, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
@@ -9,6 +9,7 @@ import {
   CalendarRangeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  DownloadIcon,
   Loader2Icon,
   PencilIcon,
   PlusIcon,
@@ -21,16 +22,24 @@ import {
   claimStatusOptions,
   createEmptyClaimForm,
   defaultClaimStatus,
-  fetchAllClaims,
+  fetchClaimsInRange,
   getClaimStatusStyle,
   mapClaimRow,
   toClaimInsert,
   toClaimUpdate,
 } from "@/lib/claim-store";
 import type { AuditEventInput } from "@/lib/audit-store";
-import { getMonthDateRange, getMonthInputValue, getWeekDateRange } from "@/lib/date-utils";
+import {
+  getExpectedServiceDatesForMonth,
+  getMonthDateRange,
+  getWeekDateRange,
+} from "@/lib/date-utils";
 import { getProviderLabel, type Member } from "@/lib/member-store";
-import { getTodayDate, type ServiceEntry } from "@/lib/service-store";
+import {
+  fetchServiceEntriesInRange,
+  getTodayDate,
+  type ServiceEntry,
+} from "@/lib/service-store";
 import { supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -94,19 +103,53 @@ type MemberClaimGroup = {
   lastAttemptedAt: string | null;
 };
 
+type ProviderClaimBatch = {
+  accepted: number;
+  claims: Claim[];
+  failed: number;
+  pending: number;
+  provider: string;
+  readyToGenerate: ServiceEntry[];
+  required: number;
+  submitted: number;
+  total: number;
+};
+
+type ClaimReviewSeverity = "high" | "medium" | "low";
+
+type ClaimReviewItem = {
+  id: string;
+  memberName: string;
+  provider: string;
+  serviceDate: string;
+  severity: ClaimReviewSeverity;
+  summary: string;
+  type: string;
+};
+
 export function ClaimsDashboard({
+  claims,
+  isLoading = false,
   memberById,
   members,
+  month,
   onAudit,
+  onClaimsChange,
+  onMonthChange,
+  onMonthDataRefresh,
   serviceEntries,
 }: {
+  claims: Claim[];
+  isLoading?: boolean;
   memberById: Map<string, Member>;
   members: Member[];
+  month: string;
   onAudit?: (input: AuditEventInput) => Promise<void>;
+  onClaimsChange?: (claims: Claim[]) => void;
+  onMonthChange: (month: string) => void;
+  onMonthDataRefresh?: (month: string) => Promise<void>;
   serviceEntries: ServiceEntry[];
 }) {
-  const [claims, setClaims] = useState<Claim[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("All");
@@ -120,33 +163,12 @@ export function ClaimsDashboard({
   const [form, setForm] = useState<ClaimFormValues>(createEmptyClaimForm());
   const [deleteTarget, setDeleteTarget] = useState<Claim | null>(null);
 
-  async function loadClaims() {
-    if (!supabase) {
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setBusyMessage("Loading claims...");
-
-    const { data, error } = await fetchAllClaims(supabase);
-
-    if (error) {
-      toast.error(error.message);
-    } else {
-      setClaims(data);
-    }
-
-    setIsLoading(false);
-    setBusyMessage(null);
-  }
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadClaims();
-  }, []);
-
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
+
+  function updateClaims(updater: (currentClaims: Claim[]) => Claim[]) {
+    const nextClaims = updater(canonicalClaims);
+    onClaimsChange?.(nextClaims);
+  }
 
   const filteredClaims = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -186,6 +208,244 @@ export function ClaimsDashboard({
         (right.lastAttemptedAt ?? "").localeCompare(left.lastAttemptedAt ?? "")
       )[0];
   }, [canonicalClaims]);
+
+  const claimKeySet = useMemo(
+    () => new Set(canonicalClaims.map((claim) => `${claim.memberId}:${claim.serviceDate}`)),
+    [canonicalClaims]
+  );
+
+  const monthServiceEntries = useMemo(
+    () => serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${month}-`)),
+    [month, serviceEntries]
+  );
+
+  const readyToGenerateEntries = useMemo(
+    () =>
+      monthServiceEntries.filter(
+        (entry) =>
+          entry.serviceLabel.toLowerCase() === "attended" &&
+          !claimKeySet.has(`${entry.memberId}:${entry.serviceDate}`) &&
+          members.some((member) => member.id === entry.memberId)
+      ),
+    [claimKeySet, members, monthServiceEntries]
+  );
+
+  const claimReviewItems = useMemo(() => {
+    const today = getTodayDate();
+    const reviewItems = new Map<string, ClaimReviewItem>();
+    const serviceByMemberDate = new Map<string, ServiceEntry>();
+    const recordedDatesByMember = new Map<string, Set<string>>();
+
+    function addReviewItem(item: ClaimReviewItem) {
+      reviewItems.set(item.id, item);
+    }
+
+    function getMemberLabel(memberId: string) {
+      const member = memberById.get(memberId);
+
+      return {
+        memberName: member?.displayName ?? "Unknown member",
+        provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
+      };
+    }
+
+    for (const entry of monthServiceEntries) {
+      const key = `${entry.memberId}:${entry.serviceDate}`;
+      serviceByMemberDate.set(key, entry);
+
+      const recordedDates = recordedDatesByMember.get(entry.memberId) ?? new Set<string>();
+      recordedDates.add(entry.serviceDate);
+      recordedDatesByMember.set(entry.memberId, recordedDates);
+    }
+
+    for (const member of members) {
+      const missingFields = [
+        !member.provider ? "provider" : "",
+        !member.serviceDays ? "service days" : "",
+      ].filter(Boolean);
+
+      if (missingFields.length > 0) {
+        addReviewItem({
+          id: `member-setup:${member.id}`,
+          memberName: member.displayName,
+          provider: member.provider ? getProviderLabel(member.provider) : "Not set",
+          serviceDate: "",
+          severity: "medium",
+          summary: `Missing ${missingFields.join(" and ")} setup.`,
+          type: "Member setup",
+        });
+        continue;
+      }
+
+      const missingDates = getExpectedServiceDatesForMonth(
+        month,
+        member.serviceDays,
+        recordedDatesByMember.get(member.id) ?? new Set<string>()
+      ).filter((date) => date <= today);
+
+      for (const serviceDate of missingDates) {
+        addReviewItem({
+          id: `expected-missing:${member.id}:${serviceDate}`,
+          memberName: member.displayName,
+          provider: member.provider ? getProviderLabel(member.provider) : "Not set",
+          serviceDate,
+          severity: "medium",
+          summary: "Expected attendance is missing through today.",
+          type: "Expected missing",
+        });
+      }
+    }
+
+    for (const entry of monthServiceEntries) {
+      const key = `${entry.memberId}:${entry.serviceDate}`;
+      const { memberName, provider } = getMemberLabel(entry.memberId);
+      const serviceLabel = entry.serviceLabel.toLowerCase();
+
+      if (serviceLabel === "attended" && !claimKeySet.has(key)) {
+        addReviewItem({
+          id: `service-no-claim:${key}`,
+          memberName,
+          provider,
+          serviceDate: entry.serviceDate,
+          severity: "medium",
+          summary: "Attended service exists but no claim has been created.",
+          type: "Service without claim",
+        });
+      }
+
+      if (serviceLabel !== "attended" && claimKeySet.has(key)) {
+        addReviewItem({
+          id: `hold-has-claim:${key}`,
+          memberName,
+          provider,
+          serviceDate: entry.serviceDate,
+          severity: "high",
+          summary: `${entry.serviceLabel} service has a claim attached.`,
+          type: "Non-attended with claim",
+        });
+      }
+    }
+
+    for (const claim of canonicalClaims) {
+      const key = `${claim.memberId}:${claim.serviceDate}`;
+      const { memberName, provider } = getMemberLabel(claim.memberId);
+
+      if (!serviceByMemberDate.has(key)) {
+        addReviewItem({
+          id: `claim-no-service:${key}`,
+          memberName,
+          provider,
+          serviceDate: claim.serviceDate,
+          severity: "high",
+          summary: "Claim exists but no matching service entry was found.",
+          type: "Claim without service",
+        });
+      }
+
+      if (claim.serviceDate > today) {
+        addReviewItem({
+          id: `future-claim:${key}`,
+          memberName,
+          provider,
+          serviceDate: claim.serviceDate,
+          severity: "low",
+          summary: "Claim date is after today.",
+          type: "Future claim",
+        });
+      }
+
+      if (claim.status.toLowerCase() === "failed") {
+        addReviewItem({
+          id: `failed-claim:${claim.id}`,
+          memberName,
+          provider,
+          serviceDate: claim.serviceDate,
+          severity: "high",
+          summary: claim.lastFailureReason || "Claim is marked failed.",
+          type: "Failed claim",
+        });
+      }
+    }
+
+    return Array.from(reviewItems.values()).sort((left, right) => {
+      const severitySort =
+        getClaimReviewSeverityRank(right.severity) - getClaimReviewSeverityRank(left.severity);
+
+      return (
+        severitySort ||
+        left.serviceDate.localeCompare(right.serviceDate) ||
+        left.memberName.localeCompare(right.memberName)
+      );
+    });
+  }, [canonicalClaims, claimKeySet, memberById, members, month, monthServiceEntries]);
+
+  const claimReviewStats = useMemo(
+    () => ({
+      high: claimReviewItems.filter((item) => item.severity === "high").length,
+      low: claimReviewItems.filter((item) => item.severity === "low").length,
+      medium: claimReviewItems.filter((item) => item.severity === "medium").length,
+      total: claimReviewItems.length,
+    }),
+    [claimReviewItems]
+  );
+
+  const providerBatches = useMemo(() => {
+    const batchesByProvider = new Map<string, ProviderClaimBatch>();
+
+    function getBatch(provider: string) {
+      const normalizedProvider = provider || "Not set";
+      const existingBatch = batchesByProvider.get(normalizedProvider);
+
+      if (existingBatch) {
+        return existingBatch;
+      }
+
+      const nextBatch: ProviderClaimBatch = {
+        accepted: 0,
+        claims: [],
+        failed: 0,
+        pending: 0,
+        provider: normalizedProvider,
+        readyToGenerate: [],
+        required: 0,
+        submitted: 0,
+        total: 0,
+      };
+      batchesByProvider.set(normalizedProvider, nextBatch);
+      return nextBatch;
+    }
+
+    for (const claim of canonicalClaims) {
+      const member = memberById.get(claim.memberId);
+      const batch = getBatch(member?.provider ?? "");
+      const status = claim.status.toLowerCase();
+
+      batch.claims.push(claim);
+      batch.total += 1;
+
+      if (status === "accepted") {
+        batch.accepted += 1;
+      } else if (status === "failed") {
+        batch.failed += 1;
+      } else if (status === "pending") {
+        batch.pending += 1;
+      } else if (status === "required") {
+        batch.required += 1;
+      } else if (status === "submitted") {
+        batch.submitted += 1;
+      }
+    }
+
+    for (const entry of readyToGenerateEntries) {
+      const member = memberById.get(entry.memberId);
+      const batch = getBatch(member?.provider ?? "");
+      batch.readyToGenerate.push(entry);
+    }
+
+    return Array.from(batchesByProvider.values()).sort((left, right) =>
+      getProviderLabel(left.provider).localeCompare(getProviderLabel(right.provider))
+    );
+  }, [canonicalClaims, memberById, readyToGenerateEntries]);
 
   const memberClaimGroups = useMemo(() => {
     const groupsByMember = new Map<string, Claim[]>();
@@ -243,7 +503,7 @@ export function ClaimsDashboard({
 
   function openAddDialog() {
     setEditingClaimId(null);
-    setForm(createEmptyClaimForm(members[0]?.id ?? "", new Date().toLocaleDateString("en-CA")));
+    setForm(createEmptyClaimForm(members[0]?.id ?? "", `${month}-01`));
     setIsFormOpen(true);
   }
 
@@ -296,7 +556,7 @@ export function ClaimsDashboard({
         toast.error(error.message);
       } else {
         const updatedClaim = mapClaimRow(data);
-        setClaims((currentClaims) =>
+        updateClaims((currentClaims) =>
           getCanonicalClaims([
             ...currentClaims.filter((claim) => claim.id !== updatedClaim.id),
             updatedClaim,
@@ -329,7 +589,7 @@ export function ClaimsDashboard({
         toast.error(error.message);
       } else {
         const newClaim = mapClaimRow(data);
-        setClaims((currentClaims) =>
+        updateClaims((currentClaims) =>
           getCanonicalClaims([newClaim, ...currentClaims])
         );
         await onAudit?.({
@@ -366,7 +626,7 @@ export function ClaimsDashboard({
       toast.error(error.message);
     } else {
       const deletedClaim = deleteTarget;
-      setClaims((currentClaims) =>
+      updateClaims((currentClaims) =>
         currentClaims.filter((claim) => claim.id !== deletedClaim.id)
       );
       setDeleteTarget(null);
@@ -394,7 +654,7 @@ export function ClaimsDashboard({
     }
 
     const today = getTodayDate();
-    const monthRange = getMonthDateRange(getMonthInputValue());
+    const monthRange = getMonthDateRange(month);
     const { start, end } =
       range === "week"
         ? getWeekDateRange(today)
@@ -410,13 +670,10 @@ export function ClaimsDashboard({
           : "Generating required claims for the whole month..."
     );
 
-    const existingResult = await supabase
-      .from("claims")
-      .select(
-        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
-      )
-      .gte("service_date", start)
-      .lte("service_date", end);
+    const [existingResult, freshServiceResult] = await Promise.all([
+      fetchClaimsInRange(supabase, start, end),
+      fetchServiceEntriesInRange(supabase, start, end),
+    ]);
 
     if (existingResult.error) {
       toast.error(existingResult.error.message);
@@ -425,74 +682,174 @@ export function ClaimsDashboard({
       return;
     }
 
-    const freshExistingClaims = existingResult.data.map(mapClaimRow);
+    if (freshServiceResult.error) {
+      toast.error(freshServiceResult.error.message);
+      setIsSaving(false);
+      setBusyMessage(null);
+      return;
+    }
+
+    const freshExistingClaims = existingResult.data;
+    const freshServiceEntries = freshServiceResult.data.filter(
+      (entry) =>
+        entry.serviceLabel.toLowerCase() === "attended" &&
+        activeMemberIds.has(entry.memberId)
+    );
     const existingClaimKeys = new Set(
       freshExistingClaims.map((claim) => `${claim.memberId}:${claim.serviceDate}`)
     );
+    const attendedServiceKeys = new Set(
+      freshServiceEntries.map((entry) => `${entry.memberId}:${entry.serviceDate}`)
+    );
 
-    const toCreate = serviceEntries.filter((entry) => {
-      if (entry.serviceLabel.toLowerCase() !== "attended") {
-        return false;
-      }
-      if (entry.serviceDate < start || entry.serviceDate > end) {
-        return false;
-      }
-      if (!activeMemberIds.has(entry.memberId)) {
-        return false;
-      }
-      return !existingClaimKeys.has(`${entry.memberId}:${entry.serviceDate}`);
+    const toCreate = freshServiceEntries.filter(
+      (entry) => !existingClaimKeys.has(`${entry.memberId}:${entry.serviceDate}`)
+    );
+    const claimsToDelete = freshExistingClaims.filter((claim) => {
+      const status = claim.status.toLowerCase();
+
+      return (
+        activeMemberIds.has(claim.memberId) &&
+        !attendedServiceKeys.has(`${claim.memberId}:${claim.serviceDate}`) &&
+        (status === "required" || status === "pending")
+      );
     });
 
-    if (toCreate.length === 0) {
+    if (toCreate.length === 0 && claimsToDelete.length === 0) {
       toast.success("No new claims needed for this range.");
       setIsSaving(false);
       setBusyMessage(null);
       return;
     }
 
-    const { data, error } = await supabase
-      .from("claims")
-      .upsert(
-        toCreate.map((entry) =>
-          toClaimInsert({
-            memberId: entry.memberId,
-            serviceDate: entry.serviceDate,
-            status: "Required",
-            lastFailureReason: "",
-          })
-        ),
-        { ignoreDuplicates: true, onConflict: "member_id,service_date" }
-      )
-      .select(
-        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
-      )
-      .order("service_date", { ascending: false });
+    const deleteResult =
+      claimsToDelete.length > 0
+        ? await supabase
+          .from("claims")
+          .delete()
+          .in("id", claimsToDelete.map((claim) => claim.id))
+        : { error: null };
 
-    if (error) {
-      toast.error(error.message);
+    if (deleteResult.error) {
+      toast.error(deleteResult.error.message);
+      setIsSaving(false);
+      setBusyMessage(null);
+      return;
+    }
+
+    const insertResult =
+      toCreate.length > 0
+        ? await supabase
+          .from("claims")
+          .upsert(
+            toCreate.map((entry) =>
+              toClaimInsert({
+                memberId: entry.memberId,
+                serviceDate: entry.serviceDate,
+                status: "Required",
+                lastFailureReason: "",
+              })
+            ),
+            { ignoreDuplicates: true, onConflict: "member_id,service_date" }
+          )
+        : { error: null };
+
+    if (insertResult.error) {
+      toast.error(insertResult.error.message);
     } else {
-      const newClaims = data.map(mapClaimRow);
-      setClaims((currentClaims) =>
-        getCanonicalClaims([...currentClaims, ...freshExistingClaims, ...newClaims])
-      );
+      const refreshedClaimsResult = await fetchClaimsInRange(supabase, start, end);
+
+      if (refreshedClaimsResult.error) {
+        toast.error(refreshedClaimsResult.error.message);
+        setIsSaving(false);
+        setBusyMessage(null);
+        return;
+      }
+
+      updateClaims(() => getCanonicalClaims(refreshedClaimsResult.data));
+      await onMonthDataRefresh?.(month);
       await onAudit?.({
         action: "claims_generated",
         entityType: "claim",
-        summary: `Generated ${newClaims.length} required claims.`,
+        summary: `Generated ${toCreate.length} required claims and removed ${claimsToDelete.length} stale claims.`,
         metadata: {
           range,
           start,
           end,
-          count: newClaims.length,
+          created: toCreate.length,
+          removed: claimsToDelete.length,
         },
       });
       toast.success(
-        `Generated ${newClaims.length} required claim${newClaims.length === 1 ? "" : "s"}.`
+        `Generated ${toCreate.length} claim${toCreate.length === 1 ? "" : "s"} and removed ${claimsToDelete.length} stale claim${claimsToDelete.length === 1 ? "" : "s"}.`
       );
     }
 
     setIsSaving(false);
     setBusyMessage(null);
+  }
+
+  function exportClaimStatusReport() {
+    const rows = canonicalClaims.map((claim) => {
+      const member = memberById.get(claim.memberId);
+
+      return {
+        attempts: claim.attemptCount,
+        lastAttempted: claim.lastAttemptedAt ?? "",
+        lastFailure: claim.lastFailureReason ?? "",
+        member: member?.displayName ?? "Unknown member",
+        provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
+        serviceDate: claim.serviceDate,
+        status: claim.status,
+        submittedAt: claim.submittedAt ?? "",
+      };
+    });
+
+    downloadCsv(`claim-status-${month}.csv`, rows);
+  }
+
+  function exportClaimQueue() {
+    const rows = readyToGenerateEntries.map((entry) => {
+      const member = memberById.get(entry.memberId);
+
+      return {
+        member: member?.displayName ?? "Unknown member",
+        provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
+        serviceDate: entry.serviceDate,
+        serviceStatus: entry.serviceLabel,
+      };
+    });
+
+    downloadCsv(`claims-needed-${month}.csv`, rows);
+  }
+
+  function exportAttendanceReport() {
+    const rows = monthServiceEntries.map((entry) => {
+      const member = memberById.get(entry.memberId);
+
+      return {
+        member: member?.displayName ?? "Unknown member",
+        provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
+        serviceDate: entry.serviceDate,
+        serviceStatus: entry.serviceLabel,
+        updatedAt: entry.updatedAt,
+      };
+    });
+
+    downloadCsv(`attendance-${month}.csv`, rows);
+  }
+
+  function exportClaimReview() {
+    const rows = claimReviewItems.map((item) => ({
+      member: item.memberName,
+      provider: item.provider,
+      serviceDate: item.serviceDate,
+      severity: item.severity,
+      type: item.type,
+      summary: item.summary,
+    }));
+
+    downloadCsv(`claim-review-${month}.csv`, rows);
   }
 
   return (
@@ -506,6 +863,15 @@ export function ClaimsDashboard({
             Create a &quot;Required&quot; claim for every attended service in this range that
             doesn&apos;t have one yet.
           </CardDescription>
+          <CardAction>
+            <Input
+              aria-label="Claims month"
+              className="w-40"
+              type="month"
+              value={month}
+              onChange={(event) => onMonthChange(event.target.value)}
+            />
+          </CardAction>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
           <Button
@@ -549,6 +915,146 @@ export function ClaimsDashboard({
           />
         ))}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Needs review</CardTitle>
+          <CardDescription>
+            Pre-bot checks for attendance and claims in {formatMonthLabel(month)}.
+          </CardDescription>
+          <CardAction>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={exportClaimReview}
+              disabled={isLoading || claimReviewItems.length === 0}
+            >
+              <DownloadIcon data-icon="inline-start" />
+              Review CSV
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {!isLoading ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <ReviewMetric label="Total" value={claimReviewStats.total} severity="low" />
+              <ReviewMetric label="High" value={claimReviewStats.high} severity="high" />
+              <ReviewMetric label="Medium" value={claimReviewStats.medium} severity="medium" />
+              <ReviewMetric label="Low" value={claimReviewStats.low} severity="low" />
+            </div>
+          ) : null}
+
+          {isLoading ? (
+            <div className="flex min-h-24 items-center justify-center gap-2 rounded-lg border border-dashed text-sm text-muted-foreground">
+              <Loader2Icon data-icon="inline-start" />
+              Refreshing month data
+            </div>
+          ) : claimReviewItems.length === 0 ? (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-4 text-sm text-emerald-700 dark:text-emerald-200">
+              No claim issues found for this month.
+            </div>
+          ) : (
+            <div className="max-h-80 overflow-y-auto rounded-lg border">
+              {claimReviewItems.slice(0, 25).map((item) => (
+                <div
+                  key={item.id}
+                  className="grid gap-2 border-b px-3 py-2 last:border-b-0 sm:grid-cols-[7rem_9rem_minmax(0,1fr)_auto] sm:items-center"
+                >
+                  <Badge className={cn("w-fit", getClaimReviewSeverityStyle(item.severity))}>
+                    {item.severity}
+                  </Badge>
+                  <span className="text-sm font-medium">
+                    {item.serviceDate
+                      ? new Date(`${item.serviceDate}T00:00:00`).toLocaleDateString()
+                      : "Setup"}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{item.memberName}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {item.type} · {item.summary}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted-foreground">{item.provider}</span>
+                </div>
+              ))}
+              {claimReviewItems.length > 25 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                  Showing 25 of {claimReviewItems.length}. Export CSV for the full review list.
+                </div>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Claim batches</CardTitle>
+          <CardDescription>
+            Provider-level claim workload for {formatMonthLabel(month)}.
+          </CardDescription>
+          <CardAction className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={exportClaimQueue}>
+              <DownloadIcon data-icon="inline-start" />
+              Queue
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={exportClaimStatusReport}>
+              <DownloadIcon data-icon="inline-start" />
+              Claims
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={exportAttendanceReport}>
+              <DownloadIcon data-icon="inline-start" />
+              Attendance
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          {providerBatches.length === 0 ? (
+            <div className="flex min-h-28 items-center justify-center rounded-lg border border-dashed px-3 text-sm text-muted-foreground">
+              No claim activity for this month
+            </div>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {providerBatches.map((batch) => (
+                <div key={batch.provider} className="rounded-lg border bg-background/60 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold">{getProviderLabel(batch.provider)}</h3>
+                      <p className="text-xs text-muted-foreground">
+                        {batch.total} claims · {batch.readyToGenerate.length} ready to generate
+                      </p>
+                    </div>
+                    <Badge
+                      className={cn(
+                        batch.failed > 0
+                          ? getClaimStatusStyle("Failed").badge
+                          : batch.readyToGenerate.length > 0
+                            ? getClaimStatusStyle("Required").badge
+                            : getClaimStatusStyle("Accepted").badge
+                      )}
+                    >
+                      {batch.failed > 0
+                        ? `${batch.failed} failed`
+                        : batch.readyToGenerate.length > 0
+                          ? "Action needed"
+                          : "Clear"}
+                    </Badge>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                    <BatchMetric label="Ready" value={batch.readyToGenerate.length} />
+                    <BatchMetric label="Required" value={batch.required} />
+                    <BatchMetric label="Pending" value={batch.pending} />
+                    <BatchMetric label="Submitted" value={batch.submitted} />
+                    <BatchMetric label="Accepted" value={batch.accepted} />
+                    <BatchMetric label="Failed" value={batch.failed} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {lastFailedClaim ? (
         <Alert variant="destructive">
@@ -611,12 +1117,7 @@ export function ClaimsDashboard({
             </Select>
           </div>
 
-          {isLoading ? (
-            <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2Icon data-icon="inline-start" />
-              Loading claims
-            </div>
-          ) : memberClaimGroups.length === 0 ? (
+          {memberClaimGroups.length === 0 ? (
             <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
               <h3 className="font-medium">No claims found</h3>
               <p className="max-w-sm text-sm text-muted-foreground">
@@ -958,6 +1459,35 @@ function StatCard({
   );
 }
 
+function BatchMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md border bg-card/80 px-2 py-1.5">
+      <p className="text-muted-foreground">{label}</p>
+      <p className="text-base font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function ReviewMetric({
+  label,
+  severity,
+  value,
+}: {
+  label: string;
+  severity: ClaimReviewSeverity;
+  value: number;
+}) {
+  return (
+    <div className="rounded-lg border bg-background/60 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 flex items-center gap-2 text-2xl font-semibold">
+        <span className={cn("size-2.5 rounded-full", getClaimReviewSeverityDot(severity))} />
+        {value}
+      </p>
+    </div>
+  );
+}
+
 function formatClaimServiceRange(group: MemberClaimGroup) {
   if (!group.earliestServiceDate || !group.latestServiceDate) {
     return "—";
@@ -971,6 +1501,13 @@ function formatClaimServiceRange(group: MemberClaimGroup) {
     : `${earliestDate} - ${latestDate}`;
 }
 
+function formatMonthLabel(month: string) {
+  return new Date(`${month}-01T00:00:00`).toLocaleDateString([], {
+    month: "long",
+    year: "numeric",
+  });
+}
+
 function getCanonicalClaims(claims: Claim[]) {
   const claimsById = new Map<string, Claim>();
 
@@ -982,9 +1519,76 @@ function getCanonicalClaims(claims: Claim[]) {
     }
   }
 
-  return Array.from(claimsById.values()).sort((left, right) =>
-    right.serviceDate.localeCompare(left.serviceDate)
-  );
+  return Array.from(claimsById.values()).sort((left, right) => {
+    const dateSort = right.serviceDate.localeCompare(left.serviceDate);
+
+    return dateSort || right.id.localeCompare(left.id);
+  });
+}
+
+function getClaimReviewSeverityRank(severity: ClaimReviewSeverity) {
+  if (severity === "high") {
+    return 3;
+  }
+
+  if (severity === "medium") {
+    return 2;
+  }
+
+  return 1;
+}
+
+function getClaimReviewSeverityDot(severity: ClaimReviewSeverity) {
+  if (severity === "high") {
+    return "bg-red-500";
+  }
+
+  if (severity === "medium") {
+    return "bg-amber-500";
+  }
+
+  return "bg-sky-500";
+}
+
+function getClaimReviewSeverityStyle(severity: ClaimReviewSeverity) {
+  if (severity === "high") {
+    return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-200";
+  }
+
+  if (severity === "medium") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200";
+  }
+
+  return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+}
+
+function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
+  const headers = rows[0] ? Object.keys(rows[0]) : ["message"];
+  const csvRows =
+    rows.length > 0
+      ? rows
+      : [{ message: "No rows for this export" }];
+  const csv = [
+    headers.join(","),
+    ...csvRows.map((row) =>
+      headers.map((header) => escapeCsvValue(row[header])).join(",")
+    ),
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function escapeCsvValue(value: unknown) {
+  const stringValue = value === null || value === undefined ? "" : String(value);
+  return `"${stringValue.replace(/"/g, '""')}"`;
 }
 
 function LoadingStatus({ message }: { message: string }) {

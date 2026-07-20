@@ -104,15 +104,42 @@ export function mapClaimRow(row: ClaimRow): Claim {
 }
 
 export async function fetchAllClaims(supabaseClient: SupabaseClient) {
+  return fetchClaimsPageByPage(supabaseClient);
+}
+
+export async function fetchClaimsInRange(
+  supabaseClient: SupabaseClient,
+  startDate: string,
+  endDate: string
+) {
+  return fetchClaimsPageByPage(supabaseClient, startDate, endDate);
+}
+
+async function fetchClaimsPageByPage(
+  supabaseClient: SupabaseClient,
+  startDate?: string,
+  endDate?: string
+) {
   const rows: ClaimRow[] = [];
 
   for (let from = 0; ; from += claimFetchPageSize) {
     const to = from + claimFetchPageSize - 1;
-    const { data, error } = await supabaseClient
+    let query = supabaseClient
       .from("claims")
       .select(claimSelectColumns)
       .order("service_date", { ascending: false })
+      .order("id", { ascending: false })
       .range(from, to);
+
+    if (startDate) {
+      query = query.gte("service_date", startDate);
+    }
+
+    if (endDate) {
+      query = query.lte("service_date", endDate);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       return { data: rows.map(mapClaimRow), error };

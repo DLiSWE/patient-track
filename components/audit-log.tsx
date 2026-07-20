@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircleIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  DownloadIcon,
   FileTextIcon,
   Loader2Icon,
   RefreshCcwIcon,
@@ -40,11 +43,13 @@ import {
 import { cn } from "@/lib/utils";
 
 const auditTypeOptions = ["All", "member", "service", "claim", "security"] as const;
+const auditPageSize = 10;
 
 export function AuditLog() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
   const [typeFilter, setTypeFilter] = useState<(typeof auditTypeOptions)[number]>("All");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -114,6 +119,27 @@ export function AuditLog() {
     return counts;
   }, [events]);
 
+  const pageCount = Math.max(1, Math.ceil(filteredEvents.length / auditPageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const visibleEvents = filteredEvents.slice(
+    safePage * auditPageSize,
+    safePage * auditPageSize + auditPageSize
+  );
+
+  function exportAuditLog() {
+    const rows = filteredEvents.map((event) => ({
+      action: event.action,
+      actorEmail: event.actorEmail ?? "",
+      createdAt: event.createdAt,
+      entityId: event.entityId ?? "",
+      entityType: event.entityType,
+      metadata: JSON.stringify(event.metadata),
+      summary: event.summary,
+    }));
+
+    downloadCsv("audit-log.csv", rows);
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -129,7 +155,17 @@ export function AuditLog() {
           <CardDescription>
             Recent changes made by signed-in users across members, services, and claims.
           </CardDescription>
-          <CardAction>
+          <CardAction className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={exportAuditLog}
+              disabled={filteredEvents.length === 0}
+            >
+              <DownloadIcon data-icon="inline-start" />
+              Export
+            </Button>
             <Button type="button" variant="outline" size="sm" onClick={loadEvents}>
               <RefreshCcwIcon data-icon="inline-start" />
               Refresh
@@ -145,14 +181,18 @@ export function AuditLog() {
                 className="pl-9"
                 placeholder="Search action, user, or member"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Select
               value={typeFilter}
-              onValueChange={(value) =>
-                setTypeFilter(value as (typeof auditTypeOptions)[number])
-              }
+              onValueChange={(value) => {
+                setTypeFilter(value as (typeof auditTypeOptions)[number]);
+                setPage(0);
+              }}
             >
               <SelectTrigger className="w-full">
                 <span className="truncate text-left">
@@ -192,11 +232,38 @@ export function AuditLog() {
               </p>
             </div>
           ) : (
-            <div className="relative flex flex-col gap-3">
-              {filteredEvents.map((event) => (
-                <AuditEventRow key={event.id} event={event} />
-              ))}
-            </div>
+            <>
+              <div className="relative flex flex-col gap-3">
+                {visibleEvents.map((event) => (
+                  <AuditEventRow key={event.id} event={event} />
+                ))}
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground">
+                  Page {safePage + 1} of {pageCount} · {filteredEvents.length} events
+                </span>
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    disabled={safePage === 0}
+                    onClick={() => setPage(Math.max(0, safePage - 1))}
+                  >
+                    <ChevronLeftIcon />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
+                  >
+                    <ChevronRightIcon />
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -316,6 +383,32 @@ function formatMetadataValue(value: unknown) {
   }
 
   return String(value);
+}
+
+function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
+  const headers = rows[0] ? Object.keys(rows[0]) : ["message"];
+  const csvRows = rows.length > 0 ? rows : [{ message: "No rows for this export" }];
+  const csv = [
+    headers.join(","),
+    ...csvRows.map((row) =>
+      headers.map((header) => escapeCsvValue(row[header])).join(",")
+    ),
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function escapeCsvValue(value: unknown) {
+  const stringValue = value === null || value === undefined ? "" : String(value);
+  return `"${stringValue.replace(/"/g, '""')}"`;
 }
 
 function formatRelativeAuditTime(value: string) {

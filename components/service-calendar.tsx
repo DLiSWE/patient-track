@@ -171,9 +171,9 @@ export function ServiceCalendar({
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const willChangeStatus =
             !isRecorded || recordedStatus.toLowerCase() !== activeStatus.toLowerCase();
-          const isClickPreviewable = isRecorded
-            ? willChangeStatus && Boolean(onStatusClick)
-            : true;
+          const shouldChangeStatus =
+            isRecorded && Boolean(onStatusClick) && (isPending || willChangeStatus);
+          const isClickPreviewable = shouldChangeStatus || !isRecorded;
 
           return (
             <button
@@ -187,8 +187,10 @@ export function ServiceCalendar({
                     ? newStatus.toLowerCase() === activeStatus.toLowerCase()
                       ? `Staged as ${newStatus} — click to cancel`
                       : `Staged as ${newStatus} — click to change to ${activeStatus}`
-                    : isRecorded && onStatusClick
+                    : shouldChangeStatus
                       ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
+                      : isRecorded
+                        ? `${recordedStatus} — click to remove (needs Save)`
                       : !isRecorded
                         ? `Click to queue as ${activeStatus} (needs Save)`
                         : undefined
@@ -208,9 +210,7 @@ export function ServiceCalendar({
                 "ring-2 ring-inset ring-rose-500 bg-rose-100 text-rose-950 line-through dark:bg-rose-950 dark:text-rose-100"
               )}
               onClick={() =>
-                isRecorded && onStatusClick
-                  ? onStatusClick(day.date)
-                  : onToggleDate(day.date)
+                shouldChangeStatus ? onStatusClick?.(day.date) : onToggleDate(day.date)
               }
             >
               <span>{day.dayNumber}</span>
