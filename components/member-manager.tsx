@@ -45,6 +45,12 @@ import {
 } from "@/lib/claim-store";
 import { AuditEventInput, createAuditEvent } from "@/lib/audit-store";
 import {
+  AppProfile,
+  ensureOwnProfile,
+  fetchOnlineProfiles,
+  touchOwnPresence,
+} from "@/lib/admin-store";
+import {
   Member,
   MemberFormValues,
   emptyMemberForm,
@@ -56,6 +62,7 @@ import {
   toMemberUpdate,
 } from "@/lib/member-store";
 import { AddMembersDialog } from "@/components/add-members-dialog";
+import { AdminPanel } from "@/components/admin-panel";
 import { AuditLog } from "@/components/audit-log";
 import { ClaimsDashboard } from "@/components/claims-dashboard";
 import {
@@ -142,7 +149,7 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "services" | "claims" | "summary" | "audit" | "member";
+type ActiveView = "members" | "services" | "claims" | "summary" | "audit" | "admin" | "member";
 type DirectorySortField = "displayName" | "provider" | "updatedAt";
 type SortDirection = "asc" | "desc";
 
@@ -183,6 +190,7 @@ const viewTitles: Record<ActiveView, string> = {
   services: "Services",
   claims: "Claims",
   audit: "Audit",
+  admin: "Admin",
   member: "Member",
   summary: "Summary",
 };
@@ -194,6 +202,9 @@ export function MemberManager() {
   const [serviceEntries, setServiceEntries] = useState<ServiceEntry[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
+  const [appProfile, setAppProfile] = useState<AppProfile | null>(null);
+  const [onlineProfiles, setOnlineProfiles] = useState<AppProfile[]>([]);
+  const [isAdminLoading, setIsAdminLoading] = useState(false);
   const [form, setForm] = useState<MemberFormValues>(emptyMemberForm);
   const [serviceForm, setServiceForm] = useState<ServiceEntryFormValues>(
     createEmptyServiceEntryForm
@@ -306,6 +317,8 @@ export function MemberManager() {
         setMfaFactorId("");
         setMfaCode("");
         setHasMfaFactor(false);
+        setAppProfile(null);
+        setOnlineProfiles([]);
       } else {
         await refreshMfaState();
       }
@@ -315,6 +328,8 @@ export function MemberManager() {
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  const isSuperAdmin = appProfile?.role === "super_admin";
 
   const activeMembers = useMemo(
     () => members.filter((member) => !member.archivedAt),
@@ -794,6 +809,41 @@ export function MemberManager() {
     toast.success(nextMessage);
   }
 
+  const loadOnlineProfiles = useCallback(async () => {
+    if (!supabase) {
+      return;
+    }
+
+    setIsAdminLoading(true);
+    const { data, error } = await fetchOnlineProfiles(supabase);
+    if (error) {
+      console.error("Online profile load failed", error.message);
+      setOnlineProfiles([]);
+    } else {
+      setOnlineProfiles(data);
+    }
+    setIsAdminLoading(false);
+  }, []);
+
+  const loadAppProfile = useCallback(async () => {
+    if (!supabase || !session) {
+      return;
+    }
+
+    const { data, error } = await ensureOwnProfile(supabase, session);
+    if (error) {
+      console.error("App profile load failed", error.message);
+      setAppProfile(null);
+      setOnlineProfiles([]);
+      return;
+    }
+
+    setAppProfile(data);
+    if (data?.role === "super_admin") {
+      await loadOnlineProfiles();
+    }
+  }, [loadOnlineProfiles, session]);
+
   async function recordAuditEvent(input: AuditEventInput) {
     if (!supabase) {
       return;
@@ -948,10 +998,45 @@ export function MemberManager() {
     if (session && hasMfaFactor && !isMfaChallengeRequired && !isMfaChecking) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       loadDashboard();
+      void loadAppProfile();
     }
     // The dashboard should load once per auth session. Month/member changes are local form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, loadAppProfile, session]);
+
+  useEffect(() => {
+    if (!supabase || !session || !hasMfaFactor || isMfaChallengeRequired || isMfaChecking) {
+      return;
+    }
+
+    const supabaseClient = supabase;
+    const touchPresence = () => {
+      void touchOwnPresence(supabaseClient, session);
+    };
+
+    touchPresence();
+    const intervalId = window.setInterval(touchPresence, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
   }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, session]);
+
+  useEffect(() => {
+    if (!isSuperAdmin) {
+      if (activeView === "admin" && appProfile) {
+        setActiveView("members");
+      }
+      return;
+    }
+
+    void loadOnlineProfiles();
+    const intervalId = window.setInterval(loadOnlineProfiles, 30_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeView, appProfile, isSuperAdmin, loadOnlineProfiles]);
 
   useEffect(() => {
     if (
@@ -2941,6 +3026,29 @@ export function MemberManager() {
                 <HistoryIcon data-icon="inline-start" />
                 Audit
               </Button>
+              {isSuperAdmin ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={cn(
+                    "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                    activeView === "admin" &&
+                    "bg-sidebar-accent text-sidebar-accent-foreground"
+                  )}
+                  onClick={() => {
+                    setActiveView("admin");
+                    setIsMobileNavOpen(false);
+                  }}
+                >
+                  <ShieldCheckIcon data-icon="inline-start" />
+                  Admin
+                  {onlineProfiles.length > 0 ? (
+                    <Badge className="ml-auto bg-emerald-300/15 text-emerald-50" variant="outline">
+                      {onlineProfiles.length}
+                    </Badge>
+                  ) : null}
+                </Button>
+              ) : null}
             </nav>
 
             <div className="mt-auto flex flex-col gap-3">
@@ -2978,11 +3086,13 @@ export function MemberManager() {
                         ? `${summaryStats.totalServices} services this month`
                         : activeView === "audit"
                           ? "Recent system activity"
-                          : activeView === "services"
-                            ? `${serviceEntriesForCalendarMonth.length} recorded`
-                            : activeView === "claims"
-                              ? `${claimsForClaimsMonth.length} claims this month`
-                              : `${activeMembers.length} total`}
+                          : activeView === "admin"
+                            ? `${onlineProfiles.length} online now`
+                            : activeView === "services"
+                              ? `${serviceEntriesForCalendarMonth.length} recorded`
+                              : activeView === "claims"
+                                ? `${claimsForClaimsMonth.length} claims this month`
+                                : `${activeMembers.length} total`}
                 </p>
               </div>
             </header>
@@ -3020,6 +3130,13 @@ export function MemberManager() {
               />
             ) : activeView === "audit" ? (
               <AuditLog />
+            ) : activeView === "admin" && isSuperAdmin ? (
+              <AdminPanel
+                currentProfile={appProfile}
+                isLoading={isAdminLoading}
+                onRefresh={loadOnlineProfiles}
+                onlineProfiles={onlineProfiles}
+              />
             ) : activeView === "claims" ? (
               <ClaimsDashboard
                 claims={claimsForClaimsMonth}
