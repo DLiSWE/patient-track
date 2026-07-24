@@ -109,6 +109,29 @@ export function getProviderLabel(provider: string) {
   );
 }
 
+export function getMemberDiscontinuedDate(member: Pick<Member, "archivedAt">) {
+  return member.archivedAt?.slice(0, 10) ?? null;
+}
+
+export function isMemberActiveOnDate(
+  member: Pick<Member, "archivedAt"> | null | undefined,
+  serviceDate: string
+) {
+  if (!member) {
+    return false;
+  }
+
+  const discontinuedDate = getMemberDiscontinuedDate(member);
+  return !discontinuedDate || serviceDate <= discontinuedDate;
+}
+
+export function isDateAfterMemberDiscontinued(
+  member: Pick<Member, "archivedAt"> | null | undefined,
+  serviceDate: string
+) {
+  return Boolean(member && !isMemberActiveOnDate(member, serviceDate));
+}
+
 export function normalizeMemberName(name: string) {
   return name
     .trim()

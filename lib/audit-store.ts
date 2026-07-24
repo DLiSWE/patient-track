@@ -68,6 +68,35 @@ export async function fetchAuditEvents(
   };
 }
 
+export async function fetchAdminAuditEvents(
+  supabaseClient: SupabaseClient,
+  options: { limit?: number; offset?: number } = {}
+) {
+  const limit = options.limit ?? 10;
+  const offset = options.offset ?? 0;
+  const sensitiveActions = [
+    "member_archived",
+    "member_deleted",
+    "member_reinstated",
+    "month_reset",
+    "services_bulk_deleted",
+    "services_bulk_filled",
+  ];
+
+  const { data, error, count } = await supabaseClient
+    .from("audit_events")
+    .select(auditEventSelectColumns, { count: "exact" })
+    .in("action", sensitiveActions)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  return {
+    data: (data ?? []).map(mapAuditEventRow),
+    count: count ?? 0,
+    error,
+  };
+}
+
 export async function createAuditEvent(
   supabaseClient: SupabaseClient,
   input: AuditEventInput

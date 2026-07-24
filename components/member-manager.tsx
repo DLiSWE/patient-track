@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
   FormEvent,
   useCallback,
@@ -43,7 +44,12 @@ import {
   fetchClaimsInRange,
   toClaimInsert,
 } from "@/lib/claim-store";
-import { AuditEventInput, createAuditEvent } from "@/lib/audit-store";
+import {
+  AuditEvent,
+  AuditEventInput,
+  createAuditEvent,
+  fetchAdminAuditEvents,
+} from "@/lib/audit-store";
 import {
   AppProfile,
   ensureOwnProfile,
@@ -54,7 +60,10 @@ import {
   Member,
   MemberFormValues,
   emptyMemberForm,
+  getMemberDiscontinuedDate,
   getProviderLabel,
+  isDateAfterMemberDiscontinued,
+  isMemberActiveOnDate,
   mapMemberRow,
   normalizeServiceDays,
   providerOptions,
@@ -77,6 +86,10 @@ import {
   serviceStatusOptions,
   toServiceEntryInsert,
 } from "@/lib/service-store";
+import {
+  SecurityEvent as AdminSecurityEvent,
+  fetchSecurityEvents,
+} from "@/lib/security-store";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
 import { MemberDetailCard } from "@/components/member-detail-card";
@@ -183,6 +196,7 @@ const memberActivityPageSize = 10;
 const directoryPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
 const summaryAttendeesPageSize = 10;
+const adminEventPageSize = 10;
 const mfaFriendlyName = "Sophia Members";
 const mfaFriendlyNamePrefix = "Sophia Members";
 const viewTitles: Record<ActiveView, string> = {
@@ -195,7 +209,18 @@ const viewTitles: Record<ActiveView, string> = {
   summary: "Summary",
 };
 
-export function MemberManager() {
+type MemberManagerMode = "app" | "login";
+
+export function MemberManager({
+  initialSelectedMemberId = null,
+  initialView = "members",
+  mode = "app",
+}: {
+  initialSelectedMemberId?: string | null;
+  initialView?: ActiveView;
+  mode?: MemberManagerMode;
+}) {
+  const router = useRouter();
   const memberFormCardRef = useRef<HTMLDivElement>(null);
   const memberNameInputRef = useRef<HTMLInputElement>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -204,6 +229,12 @@ export function MemberManager() {
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [appProfile, setAppProfile] = useState<AppProfile | null>(null);
   const [onlineProfiles, setOnlineProfiles] = useState<AppProfile[]>([]);
+  const [adminSecurityEvents, setAdminSecurityEvents] = useState<AdminSecurityEvent[]>([]);
+  const [adminSecurityEventCount, setAdminSecurityEventCount] = useState(0);
+  const [adminSecurityEventPage, setAdminSecurityEventPage] = useState(0);
+  const [adminAuditEvents, setAdminAuditEvents] = useState<AuditEvent[]>([]);
+  const [adminAuditEventCount, setAdminAuditEventCount] = useState(0);
+  const [adminAuditEventPage, setAdminAuditEventPage] = useState(0);
   const [isAdminLoading, setIsAdminLoading] = useState(false);
   const [form, setForm] = useState<MemberFormValues>(emptyMemberForm);
   const [serviceForm, setServiceForm] = useState<ServiceEntryFormValues>(
@@ -243,8 +274,10 @@ export function MemberManager() {
   const [mfaEnrollment, setMfaEnrollment] = useState<MfaEnrollment | null>(null);
   const [isMfaEnrollOpen, setIsMfaEnrollOpen] = useState(false);
   const [mfaError, setMfaError] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ActiveView>("members");
-  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<ActiveView>(initialView);
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(
+    initialSelectedMemberId
+  );
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -255,6 +288,7 @@ export function MemberManager() {
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(true);
   const [isDiscontinuedOpen, setIsDiscontinuedOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Member | null>(null);
+  const [archiveDate, setArchiveDate] = useState(getTodayDate());
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
   const [serviceDeleteTarget, setServiceDeleteTarget] = useState<ServiceEntry | null>(
     null
@@ -294,6 +328,13 @@ export function MemberManager() {
   }, [failedSignInState.lockedUntil]);
 
   useEffect(() => {
+    if (initialSelectedMemberId) {
+      setSelectedMemberId(initialSelectedMemberId);
+      setActiveView("member");
+    }
+  }, [initialSelectedMemberId]);
+
+  useEffect(() => {
     if (!supabase) {
       return;
     }
@@ -319,6 +360,12 @@ export function MemberManager() {
         setHasMfaFactor(false);
         setAppProfile(null);
         setOnlineProfiles([]);
+        setAdminSecurityEvents([]);
+        setAdminSecurityEventCount(0);
+        setAdminSecurityEventPage(0);
+        setAdminAuditEvents([]);
+        setAdminAuditEventCount(0);
+        setAdminAuditEventPage(0);
       } else {
         await refreshMfaState();
       }
@@ -329,15 +376,38 @@ export function MemberManager() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    if (!session && mode === "app") {
+      const redirectPath = `${window.location.pathname}${window.location.search}`;
+      router.replace(`/login?redirect=${encodeURIComponent(redirectPath)}`);
+    }
+
+    if (
+      session &&
+      mode === "login" &&
+      hasMfaFactor &&
+      !isMfaChallengeRequired &&
+      !isMfaChecking
+    ) {
+      const redirectPath = new URLSearchParams(window.location.search).get("redirect");
+      router.replace(redirectPath?.startsWith("/") ? redirectPath : "/");
+    }
+  }, [hasMfaFactor, isLoading, isMfaChallengeRequired, isMfaChecking, mode, router, session]);
+
   const isSuperAdmin = appProfile?.role === "super_admin";
+  const todayDate = getTodayDate();
 
   const activeMembers = useMemo(
-    () => members.filter((member) => !member.archivedAt),
-    [members]
+    () => members.filter((member) => isMemberActiveOnDate(member, todayDate)),
+    [members, todayDate]
   );
   const discontinuedMembers = useMemo(
-    () => members.filter((member) => member.archivedAt),
-    [members]
+    () => members.filter((member) => !isMemberActiveOnDate(member, todayDate)),
+    [members, todayDate]
   );
 
   const filteredMembers = useMemo(() => {
@@ -553,8 +623,21 @@ export function MemberManager() {
         calendarMonth,
         selectedServiceMember?.serviceDays ?? "",
         new Set()
+      ).filter((serviceDate) =>
+        isMemberActiveOnDate(selectedServiceMember, serviceDate)
       ),
-    [calendarMonth, selectedServiceMember?.serviceDays]
+    [calendarMonth, selectedServiceMember]
+  );
+  const unavailableServiceDatesForMemberMonth = useMemo(
+    () =>
+      new Set(
+        calendarDays.flatMap((day) =>
+          day && isDateAfterMemberDiscontinued(selectedServiceMember, day.date)
+            ? [day.date]
+            : []
+        )
+      ),
+    [calendarDays, selectedServiceMember]
   );
 
   const serviceDatesToCreate = useMemo(() => {
@@ -565,12 +648,16 @@ export function MemberManager() {
         return [];
       }
 
-      if (override.action !== "add" || recordedServiceDatesForMember.has(serviceDate)) {
+      if (
+        override.action !== "add" ||
+        recordedServiceDatesForMember.has(serviceDate) ||
+        isDateAfterMemberDiscontinued(selectedServiceMember, serviceDate)
+      ) {
         return [];
       }
       return [{ serviceDate, status: override.status }];
     });
-  }, [dateOverrides, recordedServiceDatesForMember, serviceForm.memberId]);
+  }, [dateOverrides, recordedServiceDatesForMember, selectedServiceMember, serviceForm.memberId]);
 
   const newStatusByDateForMonth = useMemo(() => {
     const map = new Map<string, string>();
@@ -800,6 +887,14 @@ export function MemberManager() {
     [visibleSecurityEvent]
   );
   const isSignInLocked = Boolean(failedSignInState.lockedUntil);
+  const adminSecurityEventPageCount = Math.max(
+    1,
+    Math.ceil(adminSecurityEventCount / adminEventPageSize)
+  );
+  const adminAuditEventPageCount = Math.max(
+    1,
+    Math.ceil(adminAuditEventCount / adminEventPageSize)
+  );
 
   function showError(nextMessage: string) {
     toast.error(nextMessage);
@@ -809,21 +904,54 @@ export function MemberManager() {
     toast.success(nextMessage);
   }
 
-  const loadOnlineProfiles = useCallback(async () => {
-    if (!supabase) {
-      return;
-    }
+  const loadAdminData = useCallback(
+    async (securityPage = adminSecurityEventPage, auditPage = adminAuditEventPage) => {
+      if (!supabase) {
+        return;
+      }
 
-    setIsAdminLoading(true);
-    const { data, error } = await fetchOnlineProfiles(supabase);
-    if (error) {
-      console.error("Online profile load failed", error.message);
-      setOnlineProfiles([]);
-    } else {
-      setOnlineProfiles(data);
-    }
-    setIsAdminLoading(false);
-  }, []);
+      setIsAdminLoading(true);
+      const [onlineResult, securityResult, auditResult] = await Promise.all([
+        fetchOnlineProfiles(supabase),
+        fetchSecurityEvents(supabase, {
+          limit: adminEventPageSize,
+          offset: securityPage * adminEventPageSize,
+        }),
+        fetchAdminAuditEvents(supabase, {
+          limit: adminEventPageSize,
+          offset: auditPage * adminEventPageSize,
+        }),
+      ]);
+
+      if (onlineResult.error) {
+        console.error("Online profile load failed", onlineResult.error.message);
+        setOnlineProfiles([]);
+      } else {
+        setOnlineProfiles(onlineResult.data);
+      }
+
+      if (securityResult.error) {
+        console.error("Security event load failed", securityResult.error.message);
+        setAdminSecurityEvents([]);
+        setAdminSecurityEventCount(0);
+      } else {
+        setAdminSecurityEvents(securityResult.data);
+        setAdminSecurityEventCount(securityResult.count);
+      }
+
+      if (auditResult.error) {
+        console.error("Admin audit load failed", auditResult.error.message);
+        setAdminAuditEvents([]);
+        setAdminAuditEventCount(0);
+      } else {
+        setAdminAuditEvents(auditResult.data);
+        setAdminAuditEventCount(auditResult.count);
+      }
+
+      setIsAdminLoading(false);
+    },
+    [adminAuditEventPage, adminSecurityEventPage]
+  );
 
   const loadAppProfile = useCallback(async () => {
     if (!supabase || !session) {
@@ -840,9 +968,9 @@ export function MemberManager() {
 
     setAppProfile(data);
     if (data?.role === "super_admin") {
-      await loadOnlineProfiles();
+      await loadAdminData();
     }
-  }, [loadOnlineProfiles, session]);
+  }, [loadAdminData, session]);
 
   async function recordAuditEvent(input: AuditEventInput) {
     if (!supabase) {
@@ -1030,13 +1158,13 @@ export function MemberManager() {
       return;
     }
 
-    void loadOnlineProfiles();
-    const intervalId = window.setInterval(loadOnlineProfiles, 30_000);
+    void loadAdminData();
+    const intervalId = window.setInterval(() => void loadAdminData(), 30_000);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [activeView, appProfile, isSuperAdmin, loadOnlineProfiles]);
+  }, [activeView, appProfile, isSuperAdmin, loadAdminData]);
 
   useEffect(() => {
     if (
@@ -1443,6 +1571,7 @@ export function MemberManager() {
       const claimSyncResult = await reconcileSafeClaimsForServiceChanges(
         supabase,
         serviceForm.memberId,
+        selectedServiceMember ?? null,
         calendarMonth,
         datesToCreate,
         entriesToDelete,
@@ -1553,6 +1682,8 @@ export function MemberManager() {
         end,
         member.serviceDays,
         recordedDatesByMember.get(member.id) ?? new Set<string>()
+      ).filter((serviceDate) =>
+        isMemberActiveOnDate(member, serviceDate)
       );
 
       for (const serviceDate of expectedDates) {
@@ -1823,6 +1954,8 @@ export function MemberManager() {
       calendarMonth,
       selectedServiceMember?.serviceDays ?? "",
       recordedServiceDatesForMemberMonth
+    ).filter((serviceDate) =>
+      isMemberActiveOnDate(selectedServiceMember, serviceDate)
     );
 
     setDateOverrides((currentOverrides) => {
@@ -1844,6 +1977,11 @@ export function MemberManager() {
   }
 
   function toggleSelectedServiceDate(serviceDate: string) {
+    if (isDateAfterMemberDiscontinued(selectedServiceMember, serviceDate)) {
+      showError("That date is after this member's discontinued date.");
+      return;
+    }
+
     const isRecorded = recordedServiceDatesForMember.has(serviceDate);
     const targetStatus = serviceForm.serviceLabel;
     const overrideKey = getServiceEntryMemberDateKey(serviceForm.memberId, serviceDate);
@@ -2155,16 +2293,18 @@ export function MemberManager() {
   }
 
   async function confirmArchive() {
-    if (!supabase || !archiveTarget) {
+    if (!supabase || !archiveTarget || !archiveDate) {
       return;
     }
 
     setIsSaving(true);
     setBusyMessage("Updating member status...");
 
+    const archivedAt = `${archiveDate}T12:00:00.000Z`;
+
     const { data, error } = await supabase
       .from("members")
-      .update({ archived_at: new Date().toISOString() })
+      .update({ archived_at: archivedAt, updated_at: new Date().toISOString() })
       .eq("id", archiveTarget.id)
       .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
       .single();
@@ -2172,6 +2312,19 @@ export function MemberManager() {
     if (error) {
       showError(error.message);
     } else {
+      const claimCleanupResult = await supabase
+        .from("claims")
+        .delete()
+        .eq("member_id", archiveTarget.id)
+        .gt("service_date", archiveDate)
+        .in("status", ["Required", "Pending"]);
+
+      if (claimCleanupResult.error) {
+        showError(claimCleanupResult.error.message);
+        setIsSaving(false);
+        return;
+      }
+
       const updatedMember = mapMemberRow(data);
       setMembers((currentMembers) =>
         currentMembers.map((member) =>
@@ -2192,17 +2345,20 @@ export function MemberManager() {
       }
 
       setArchiveTarget(null);
+      setArchiveDate(getTodayDate());
       await recordAuditEvent({
         action: "member_archived",
         entityType: "member",
         entityId: updatedMember.id,
-        summary: `Discontinued ${updatedMember.displayName}.`,
+        summary: `Discontinued ${updatedMember.displayName} effective ${archiveDate}.`,
         metadata: {
+          admin: true,
+          discontinuedDate: archiveDate,
           member: updatedMember.displayName,
           provider: updatedMember.provider,
         },
       });
-      showInfo(`Discontinued ${updatedMember.displayName}.`);
+      showInfo(`Discontinued ${updatedMember.displayName} effective ${archiveDate}.`);
     }
 
     setIsSaving(false);
@@ -2238,6 +2394,7 @@ export function MemberManager() {
         entityId: updatedMember.id,
         summary: `Reinstated ${updatedMember.displayName}.`,
         metadata: {
+          admin: true,
           member: updatedMember.displayName,
           provider: updatedMember.provider,
         },
@@ -2431,6 +2588,7 @@ export function MemberManager() {
         entityType: "service",
         summary: `Deleted ${idsToDelete.length} service dates.`,
         metadata: {
+          admin: true,
           count: idsToDelete.length,
           dates: selectedServiceEntries.map((entry) => entry.serviceDate),
           members: selectedServiceEntries.map(
@@ -2546,6 +2704,7 @@ export function MemberManager() {
       entityType: "service",
       summary: `Reset services and claims for ${formatMonthLabel(calendarMonth)}.`,
       metadata: {
+        admin: true,
         month: calendarMonth,
         claimsDeleted: claimCount,
         servicesDeleted: serviceCount,
@@ -2586,6 +2745,18 @@ export function MemberManager() {
   }
 
   if (!session) {
+    if (mode === "app") {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
+          <ThemeToggle className="absolute top-4 right-4" />
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2Icon data-icon="inline-start" />
+            Opening sign in
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
         <ThemeToggle className="absolute top-4 right-4" />
@@ -2645,6 +2816,18 @@ export function MemberManager() {
   const mfaQrCodeImageUrl = mfaEnrollment
     ? getMfaQrCodeImageUrl(mfaEnrollment.qrCode)
     : "";
+
+  if (mode === "login" && hasMfaFactor && !isMfaChallengeRequired && !isMfaChecking) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
+        <ThemeToggle className="absolute top-4 right-4" />
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2Icon data-icon="inline-start" />
+          Opening dashboard
+        </div>
+      </main>
+    );
+  }
 
   if (isMfaChecking || isMfaChallengeRequired || !hasMfaFactor) {
     const isMfaSetupRequired = !isMfaChecking && !isMfaChallengeRequired && !hasMfaFactor;
@@ -3132,10 +3315,24 @@ export function MemberManager() {
               <AuditLog />
             ) : activeView === "admin" && isSuperAdmin ? (
               <AdminPanel
+                adminAuditEvents={adminAuditEvents}
+                adminAuditPage={adminAuditEventPage}
+                adminAuditPageCount={adminAuditEventPageCount}
                 currentProfile={appProfile}
                 isLoading={isAdminLoading}
-                onRefresh={loadOnlineProfiles}
+                onAdminAuditPageChange={(page) => {
+                  setAdminAuditEventPage(page);
+                  void loadAdminData(adminSecurityEventPage, page);
+                }}
+                onRefresh={() => loadAdminData()}
+                onSecurityEventPageChange={(page) => {
+                  setAdminSecurityEventPage(page);
+                  void loadAdminData(page, adminAuditEventPage);
+                }}
                 onlineProfiles={onlineProfiles}
+                securityEventPage={adminSecurityEventPage}
+                securityEventPageCount={adminSecurityEventPageCount}
+                securityEvents={adminSecurityEvents}
               />
             ) : activeView === "claims" ? (
               <ClaimsDashboard
@@ -3155,10 +3352,14 @@ export function MemberManager() {
                 claims={claims}
                 member={selectedMember}
                 month={memberDetailMonth}
-                onBack={() => setActiveView("members")}
+                onBack={() => {
+                  setActiveView("members");
+                  router.push("/");
+                }}
                 onEdit={(member) => {
                   editMember(member);
                   setActiveView("members");
+                  router.push("/");
                 }}
                 onMonthChange={handleMemberDetailMonthChange}
                 serviceEntries={serviceEntries}
@@ -3381,6 +3582,7 @@ export function MemberManager() {
                             recordedDates={recordedServiceDatesForMemberMonth}
                             recordedStatusByDate={displayedStatusByDateForMemberMonth}
                             selectedDates={effectiveSelectedDatesForMonth}
+                            unavailableDates={unavailableServiceDatesForMemberMonth}
                             onClearDates={removeAllSelectedServiceDates}
                             onMonthChange={handleCalendarMonthChange}
                             onResetExpected={resetExpectedServiceDates}
@@ -3838,7 +4040,11 @@ export function MemberManager() {
                                   <div className="flex items-center gap-2">
                                     {member.displayName}
                                     {member.archivedAt ? (
-                                      <Badge variant="secondary">Discontinued</Badge>
+                                      <Badge variant="secondary">
+                                        Discontinue after {new Date(
+                                          `${getMemberDiscontinuedDate(member) ?? member.archivedAt}T00:00:00`
+                                        ).toLocaleDateString()}
+                                      </Badge>
                                     ) : null}
                                   </div>
                                 </TableCell>
@@ -3860,6 +4066,7 @@ export function MemberManager() {
                                       onClick={() => {
                                         setSelectedMemberId(member.id);
                                         setActiveView("member");
+                                        router.push(`/members/${member.id}`);
                                       }}
                                     >
                                       <EyeIcon data-icon="inline-start" />
@@ -3889,7 +4096,10 @@ export function MemberManager() {
                                         type="button"
                                         variant="outline"
                                         size="sm"
-                                        onClick={() => setArchiveTarget(member)}
+                                        onClick={() => {
+                                          setArchiveDate(getTodayDate());
+                                          setArchiveTarget(member);
+                                        }}
                                       >
                                         <ArchiveIcon data-icon="inline-start" />
                                         Discontinue
@@ -4125,7 +4335,10 @@ export function MemberManager() {
                             className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
                           >
                             <code className="truncate text-xs text-muted-foreground">
-                              {JSON.stringify({ name: member.displayName })}
+                              {JSON.stringify({
+                                name: member.displayName,
+                                discontinuedAfter: getMemberDiscontinuedDate(member),
+                              })}
                             </code>
                             <Button
                               type="button"
@@ -4153,6 +4366,7 @@ export function MemberManager() {
         onOpenChange={(open) => {
           if (!open) {
             setArchiveTarget(null);
+            setArchiveDate(getTodayDate());
           }
         }}
       >
@@ -4160,11 +4374,20 @@ export function MemberManager() {
           <AlertDialogHeader>
             <AlertDialogTitle>Discontinue member?</AlertDialogTitle>
             <AlertDialogDescription>
-              {archiveTarget?.displayName} will be hidden from the directory and pickers
-              unless you search for them. Their service history is kept, and you can
-              reinstate them anytime.
+              {archiveTarget?.displayName} will stay eligible for services and claims
+              through the selected date. Dates after it are blocked, and pending claim
+              queue rows after it are removed.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <Field label="Discontinue after" htmlFor="archive-date">
+            <Input
+              id="archive-date"
+              type="date"
+              value={archiveDate}
+              onChange={(event) => setArchiveDate(event.target.value)}
+              required
+            />
+          </Field>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep visible</AlertDialogCancel>
             <AlertDialogAction
@@ -4620,6 +4843,7 @@ function formatMonthLabel(month: string) {
 async function reconcileSafeClaimsForServiceChanges(
   supabaseClient: SupabaseClient,
   memberId: string,
+  member: Member | null,
   month: string,
   datesToCreate: Array<{ serviceDate: string; status: string }>,
   entriesToDelete: ServiceEntry[],
@@ -4633,7 +4857,10 @@ async function reconcileSafeClaimsForServiceChanges(
   }
 
   for (const { entry, status } of statusChangesToApply) {
-    if (status.toLowerCase() === "attended") {
+    if (
+      status.toLowerCase() === "attended" &&
+      isMemberActiveOnDate(member, entry.serviceDate)
+    ) {
       requiredClaimDates.add(entry.serviceDate);
     } else {
       staleClaimDates.add(entry.serviceDate);
@@ -4641,7 +4868,7 @@ async function reconcileSafeClaimsForServiceChanges(
   }
 
   for (const { serviceDate, status } of datesToCreate) {
-    if (status.toLowerCase() === "attended") {
+    if (status.toLowerCase() === "attended" && isMemberActiveOnDate(member, serviceDate)) {
       requiredClaimDates.add(serviceDate);
     }
   }

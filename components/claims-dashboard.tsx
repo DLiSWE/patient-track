@@ -1,17 +1,20 @@
 "use client";
 
-import { Fragment, FormEvent, useMemo, useState } from "react";
+import { Fragment, FormEvent, type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
+  BotIcon,
   CalendarClockIcon,
   CalendarDaysIcon,
   CalendarRangeIcon,
+  CheckCircle2Icon,
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
   Loader2Icon,
   PencilIcon,
+  PlayCircleIcon,
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -34,7 +37,12 @@ import {
   getMonthDateRange,
   getWeekDateRange,
 } from "@/lib/date-utils";
-import { getProviderLabel, type Member } from "@/lib/member-store";
+import {
+  getProviderLabel,
+  isDateAfterMemberDiscontinued,
+  isMemberActiveOnDate,
+  type Member,
+} from "@/lib/member-store";
 import {
   fetchServiceEntriesInRange,
   getTodayDate,
@@ -106,6 +114,7 @@ type MemberClaimGroup = {
 type ProviderClaimBatch = {
   accepted: number;
   claims: Claim[];
+  created: number;
   failed: number;
   pending: number;
   provider: string;
@@ -222,12 +231,16 @@ export function ClaimsDashboard({
   const readyToGenerateEntries = useMemo(
     () =>
       monthServiceEntries.filter(
-        (entry) =>
-          entry.serviceLabel.toLowerCase() === "attended" &&
-          !claimKeySet.has(`${entry.memberId}:${entry.serviceDate}`) &&
-          members.some((member) => member.id === entry.memberId)
+        (entry) => {
+          const member = memberById.get(entry.memberId);
+          return (
+            entry.serviceLabel.toLowerCase() === "attended" &&
+            !claimKeySet.has(`${entry.memberId}:${entry.serviceDate}`) &&
+            isMemberActiveOnDate(member, entry.serviceDate)
+          );
+        }
       ),
-    [claimKeySet, members, monthServiceEntries]
+    [claimKeySet, memberById, monthServiceEntries]
   );
 
   const claimReviewItems = useMemo(() => {
@@ -281,7 +294,7 @@ export function ClaimsDashboard({
         month,
         member.serviceDays,
         recordedDatesByMember.get(member.id) ?? new Set<string>()
-      ).filter((date) => date <= today);
+      ).filter((date) => date <= today && isMemberActiveOnDate(member, date));
 
       for (const serviceDate of missingDates) {
         addReviewItem({
@@ -298,10 +311,27 @@ export function ClaimsDashboard({
 
     for (const entry of monthServiceEntries) {
       const key = `${entry.memberId}:${entry.serviceDate}`;
+      const member = memberById.get(entry.memberId);
       const { memberName, provider } = getMemberLabel(entry.memberId);
       const serviceLabel = entry.serviceLabel.toLowerCase();
 
-      if (serviceLabel === "attended" && !claimKeySet.has(key)) {
+      if (isDateAfterMemberDiscontinued(member, entry.serviceDate)) {
+        addReviewItem({
+          id: `service-after-discontinue:${key}`,
+          memberName,
+          provider,
+          serviceDate: entry.serviceDate,
+          severity: "high",
+          summary: "Service date is after this member's discontinued date.",
+          type: "Service after discontinue",
+        });
+      }
+
+      if (
+        serviceLabel === "attended" &&
+        !claimKeySet.has(key) &&
+        isMemberActiveOnDate(member, entry.serviceDate)
+      ) {
         addReviewItem({
           id: `service-no-claim:${key}`,
           memberName,
@@ -328,7 +358,20 @@ export function ClaimsDashboard({
 
     for (const claim of canonicalClaims) {
       const key = `${claim.memberId}:${claim.serviceDate}`;
+      const member = memberById.get(claim.memberId);
       const { memberName, provider } = getMemberLabel(claim.memberId);
+
+      if (isDateAfterMemberDiscontinued(member, claim.serviceDate)) {
+        addReviewItem({
+          id: `claim-after-discontinue:${key}`,
+          memberName,
+          provider,
+          serviceDate: claim.serviceDate,
+          severity: "high",
+          summary: "Claim date is after this member's discontinued date.",
+          type: "Claim after discontinue",
+        });
+      }
 
       if (!serviceByMemberDate.has(key)) {
         addReviewItem({
@@ -403,6 +446,7 @@ export function ClaimsDashboard({
       const nextBatch: ProviderClaimBatch = {
         accepted: 0,
         claims: [],
+        created: 0,
         failed: 0,
         pending: 0,
         provider: normalizedProvider,
@@ -425,6 +469,8 @@ export function ClaimsDashboard({
 
       if (status === "accepted") {
         batch.accepted += 1;
+      } else if (status === "created") {
+        batch.created += 1;
       } else if (status === "failed") {
         batch.failed += 1;
       } else if (status === "pending") {
@@ -446,6 +492,36 @@ export function ClaimsDashboard({
       getProviderLabel(left.provider).localeCompare(getProviderLabel(right.provider))
     );
   }, [canonicalClaims, memberById, readyToGenerateEntries]);
+
+  const botSummary = useMemo(() => {
+    const created = stats.Created ?? 0;
+    const accepted = stats.Accepted ?? 0;
+    const completed = created + accepted;
+    const failed = stats.Failed ?? 0;
+    const required = stats.Required ?? 0;
+    const pending = stats.Pending ?? 0;
+    const submitted = stats.Submitted ?? 0;
+    const runnable = required + failed;
+    const inProgress = pending + submitted;
+    const total = canonicalClaims.length;
+    const lastActivity = canonicalClaims
+      .map((claim) => claim.lastAttemptedAt ?? claim.submittedAt ?? claim.updatedAt)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null;
+
+    return {
+      completed,
+      completionRate: total ? Math.round((completed / total) * 100) : 0,
+      failed,
+      inProgress,
+      lastActivity,
+      readyToGenerate: readyToGenerateEntries.length,
+      required,
+      runnable,
+      total,
+    };
+  }, [canonicalClaims, readyToGenerateEntries.length, stats]);
 
   const memberClaimGroups = useMemo(() => {
     const groupsByMember = new Map<string, Claim[]>();
@@ -536,6 +612,11 @@ export function ClaimsDashboard({
     event.preventDefault();
 
     if (!supabase || !form.memberId || !form.serviceDate) {
+      return;
+    }
+
+    if (!isMemberActiveOnDate(memberById.get(form.memberId), form.serviceDate)) {
+      toast.error("Claim date is after this member's discontinued date.");
       return;
     }
 
@@ -660,7 +741,7 @@ export function ClaimsDashboard({
         ? getWeekDateRange(today)
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
 
-    const activeMemberIds = new Set(members.map((member) => member.id));
+    const memberMap = new Map(members.map((member) => [member.id, member]));
     setIsSaving(true);
     setBusyMessage(
       range === "week"
@@ -691,9 +772,13 @@ export function ClaimsDashboard({
 
     const freshExistingClaims = existingResult.data;
     const freshServiceEntries = freshServiceResult.data.filter(
-      (entry) =>
-        entry.serviceLabel.toLowerCase() === "attended" &&
-        activeMemberIds.has(entry.memberId)
+      (entry) => {
+        const member = memberMap.get(entry.memberId);
+        return (
+          entry.serviceLabel.toLowerCase() === "attended" &&
+          isMemberActiveOnDate(member, entry.serviceDate)
+        );
+      }
     );
     const existingClaimKeys = new Set(
       freshExistingClaims.map((claim) => `${claim.memberId}:${claim.serviceDate}`)
@@ -707,10 +792,12 @@ export function ClaimsDashboard({
     );
     const claimsToDelete = freshExistingClaims.filter((claim) => {
       const status = claim.status.toLowerCase();
+      const member = memberMap.get(claim.memberId);
 
       return (
-        activeMemberIds.has(claim.memberId) &&
-        !attendedServiceKeys.has(`${claim.memberId}:${claim.serviceDate}`) &&
+        member &&
+        (!isMemberActiveOnDate(member, claim.serviceDate) ||
+          !attendedServiceKeys.has(`${claim.memberId}:${claim.serviceDate}`)) &&
         (status === "required" || status === "pending")
       );
     });
@@ -904,6 +991,112 @@ export function ClaimsDashboard({
         </CardContent>
       </Card>
 
+      <Card className="overflow-hidden border-primary/20 bg-primary/5">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BotIcon className="size-5 text-primary" />
+            Bot claim status
+          </CardTitle>
+          <CardDescription>
+            Current bot queue and completion state for {formatMonthLabel(month)}.
+          </CardDescription>
+          <CardAction>
+            <Badge
+              className={cn(
+                botSummary.failed > 0
+                  ? getClaimStatusStyle("Failed").badge
+                  : botSummary.runnable > 0
+                    ? getClaimStatusStyle("Required").badge
+                    : getClaimStatusStyle("Created").badge
+              )}
+            >
+              {botSummary.failed > 0
+                ? "Retry needed"
+                : botSummary.runnable > 0
+                  ? "Ready to run"
+                  : "Caught up"}
+            </Badge>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-4">
+            <BotMetric
+              detail={`${botSummary.required} required, ${botSummary.failed} failed`}
+              icon={<PlayCircleIcon className="size-4" />}
+              label="Runnable by bot"
+              tone={botSummary.runnable > 0 ? "action" : "neutral"}
+              value={botSummary.runnable}
+            />
+            <BotMetric
+              detail={`${botSummary.completionRate}% of this month`}
+              icon={<CheckCircle2Icon className="size-4" />}
+              label="Created or accepted"
+              tone="success"
+              value={botSummary.completed}
+            />
+            <BotMetric
+              detail={`${botSummary.inProgress} pending/submitted`}
+              icon={<CalendarClockIcon className="size-4" />}
+              label="In progress"
+              tone="neutral"
+              value={botSummary.inProgress}
+            />
+            <BotMetric
+              detail="Attended services without claims"
+              icon={<CalendarDaysIcon className="size-4" />}
+              label="Need queue creation"
+              tone={botSummary.readyToGenerate > 0 ? "warning" : "neutral"}
+              value={botSummary.readyToGenerate}
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
+            <div className="rounded-lg border bg-background/70 p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">Provider run queue</p>
+                  <p className="text-xs text-muted-foreground">
+                    Required and failed claims are what the bot can pick up.
+                  </p>
+                </div>
+                <Badge variant="secondary">{botSummary.total} total</Badge>
+              </div>
+              <div className="grid gap-2">
+                {providerBatches.length === 0 ? (
+                  <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                    No claim rows for this month.
+                  </p>
+                ) : (
+                  providerBatches.map((batch) => (
+                    <ProviderBotRow key={batch.provider} batch={batch} />
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-background/70 p-3">
+              <p className="text-sm font-semibold">Last bot activity</p>
+              <p className="mt-1 text-2xl font-semibold">
+                {botSummary.lastActivity
+                  ? new Date(botSummary.lastActivity).toLocaleDateString()
+                  : "None"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {botSummary.lastActivity
+                  ? new Date(botSummary.lastActivity).toLocaleString()
+                  : "No claim attempt or update has been recorded for this month."}
+              </p>
+              {lastFailedClaim ? (
+                <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
+                  Latest failed claim: {memberById.get(lastFailedClaim.memberId)?.displayName ?? "Unknown member"} on{" "}
+                  {new Date(`${lastFailedClaim.serviceDate}T00:00:00`).toLocaleDateString()}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Total" value={stats.Total ?? 0} />
         {claimStatusOptions.map((status) => (
@@ -1041,7 +1234,7 @@ export function ClaimsDashboard({
                           : "Clear"}
                     </Badge>
                   </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
                     <BatchMetric label="Ready" value={batch.readyToGenerate.length} />
                     <BatchMetric label="Required" value={batch.required} />
                     <BatchMetric label="Pending" value={batch.pending} />
@@ -1455,6 +1648,60 @@ function StatCard({
         {label}
       </p>
       <p className="text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function BotMetric({
+  detail,
+  icon,
+  label,
+  tone,
+  value,
+}: {
+  detail: string;
+  icon: ReactNode;
+  label: string;
+  tone: "action" | "neutral" | "success" | "warning";
+  value: number;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border bg-background/75 p-3",
+        tone === "action" && "border-violet-500/30 bg-violet-500/10",
+        tone === "success" && "border-emerald-500/30 bg-emerald-500/10",
+        tone === "warning" && "border-amber-500/30 bg-amber-500/10"
+      )}
+    >
+      <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {icon}
+        {label}
+      </p>
+      <p className="mt-2 text-3xl font-semibold">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function ProviderBotRow({ batch }: { batch: ProviderClaimBatch }) {
+  const runnable = batch.required + batch.failed;
+  const completed = batch.accepted + batch.created;
+
+  return (
+    <div className="grid gap-2 rounded-md border bg-card/70 p-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{getProviderLabel(batch.provider)}</p>
+        <p className="text-xs text-muted-foreground">
+          {batch.readyToGenerate.length} need queue creation · {completed} completed
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-1.5 sm:justify-end">
+        <Badge className={getClaimStatusStyle("Required").badge}>{runnable} runnable</Badge>
+        {batch.failed > 0 ? (
+          <Badge className={getClaimStatusStyle("Failed").badge}>{batch.failed} failed</Badge>
+        ) : null}
+      </div>
     </div>
   );
 }

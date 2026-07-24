@@ -61,6 +61,10 @@ const calendarLegend = [
     className: "border-blue-500 bg-blue-100 dark:bg-blue-950",
     label: "Vacation",
   },
+  {
+    className: "border-zinc-800 bg-zinc-950 dark:border-zinc-600 dark:bg-black",
+    label: "Unavailable",
+  },
 ];
 
 export function ServiceCalendar({
@@ -78,6 +82,7 @@ export function ServiceCalendar({
   recordedDates,
   recordedStatusByDate,
   selectedDates,
+  unavailableDates,
 }: {
   activeStatus?: string;
   days: Array<CalendarDay | null>;
@@ -93,6 +98,7 @@ export function ServiceCalendar({
   recordedDates: Set<string>;
   recordedStatusByDate?: Map<string, string>;
   selectedDates: string[];
+  unavailableDates?: Set<string>;
 }) {
   const activeStatusStyle = getServiceStatusStyle(activeStatus);
   const selectedDateSet = new Set(selectedDates);
@@ -167,6 +173,7 @@ export function ServiceCalendar({
           const isNew = isSelected && !isRecorded;
           const isSaved = isSelected && isRecorded;
           const isPending = Boolean(pendingStatusDates?.has(day.date));
+          const isUnavailable = Boolean(unavailableDates?.has(day.date));
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const willChangeStatus =
@@ -183,6 +190,8 @@ export function ServiceCalendar({
               title={
                 isPending
                   ? `Staged as ${recordedStatus} — click to change, or Save to apply`
+                  : isUnavailable
+                    ? "Unavailable after discontinued date"
                   : isNew
                     ? newStatus.toLowerCase() === activeStatus.toLowerCase()
                       ? `Staged as ${newStatus} — click to cancel`
@@ -198,7 +207,7 @@ export function ServiceCalendar({
               className={cn(
                 "flex size-10 flex-col items-center justify-center gap-0 rounded-none border border-border text-sm font-medium transition-colors sm:size-14 sm:gap-0.5 sm:rounded-md sm:text-base",
                 "bg-background hover:bg-muted",
-                isClickPreviewable && activeStatusStyle.hoverRing,
+                isClickPreviewable && !isUnavailable && activeStatusStyle.hoverRing,
                 isSaved && getServiceStatusStyle(recordedStatus).cell,
                 isNew && getServiceStatusStyle(newStatus).cell,
                 (isPending || isNew) && "border-dashed",
@@ -207,8 +216,11 @@ export function ServiceCalendar({
                 !isRemoved &&
                 "ring-2 ring-inset ring-amber-500 bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100",
                 isRemoved &&
-                "ring-2 ring-inset ring-rose-500 bg-rose-100 text-rose-950 line-through dark:bg-rose-950 dark:text-rose-100"
+                "ring-2 ring-inset ring-rose-500 bg-rose-100 text-rose-950 line-through dark:bg-rose-950 dark:text-rose-100",
+                isUnavailable &&
+                "cursor-not-allowed border-zinc-800 bg-zinc-950 text-zinc-500 opacity-70 hover:bg-zinc-950 dark:border-zinc-700 dark:bg-black dark:text-zinc-500"
               )}
+              disabled={isUnavailable}
               onClick={() =>
                 shouldChangeStatus ? onStatusClick?.(day.date) : onToggleDate(day.date)
               }

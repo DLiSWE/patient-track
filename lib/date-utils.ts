@@ -1,4 +1,5 @@
 import type { Member } from "@/lib/member-store";
+import { isMemberActiveOnDate } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 
 export const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -175,8 +176,10 @@ export function getExpectedMembersByDate(
     }
 
     const date = parseDateString(day.date);
-    const expectedMembers = members.filter((member) =>
-      parseServiceWeekdays(member.serviceDays).has(date.getDay())
+    const expectedMembers = members.filter(
+      (member) =>
+        isMemberActiveOnDate(member, day.date) &&
+        parseServiceWeekdays(member.serviceDays).has(date.getDay())
     );
 
     if (expectedMembers.length > 0) {

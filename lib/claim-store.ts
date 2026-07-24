@@ -22,6 +22,7 @@ export type ClaimFormValues = {
 
 export const claimStatusOptions = [
   { label: "Required", value: "Required" },
+  { label: "Created", value: "Created" },
   { label: "Pending", value: "Pending" },
   { label: "Submitted", value: "Submitted" },
   { label: "Accepted", value: "Accepted" },
@@ -35,6 +36,11 @@ export const claimStatusStyles: Record<string, { badge: string; dot: string }> =
     badge:
       "ring-1 ring-inset ring-violet-500 bg-violet-100 text-violet-950 dark:bg-violet-950 dark:text-violet-100",
     dot: "bg-violet-500",
+  },
+  created: {
+    badge:
+      "ring-1 ring-inset ring-teal-500 bg-teal-100 text-teal-950 dark:bg-teal-950 dark:text-teal-100",
+    dot: "bg-teal-500",
   },
   pending: {
     badge:
