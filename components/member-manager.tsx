@@ -243,6 +243,10 @@ export function MemberManager({
   const [calendarMonth, setCalendarMonth] = useState(getMonthInputValue());
   const [summaryMonth, setSummaryMonth] = useState(getMonthInputValue());
   const [claimsMonth, setClaimsMonth] = useState(getMonthInputValue());
+  const [bulkFillWeekDate, setBulkFillWeekDate] = useState(getTodayDate());
+  const [bulkFillTarget, setBulkFillTarget] = useState<
+    "week" | "monthToDate" | "month" | null
+  >(null);
   const [loadedDataMonths, setLoadedDataMonths] = useState<Set<string>>(
     () => new Set()
   );
@@ -532,6 +536,33 @@ export function MemberManager({
       serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${calendarMonth}-`)),
     [calendarMonth, serviceEntries]
   );
+  const savedServiceEntriesForCalendarMonth = useMemo(
+    () =>
+      serviceEntriesForCalendarMonth.filter(
+        (entry) => entry.serviceLabel.toLowerCase() === "attended"
+      ),
+    [serviceEntriesForCalendarMonth]
+  );
+  const savedServiceEntryKeysForCalendarMonth = useMemo(
+    () =>
+      new Set(
+        savedServiceEntriesForCalendarMonth.map(
+          (entry) => `${entry.memberId}:${entry.serviceDate}`
+        )
+      ),
+    [savedServiceEntriesForCalendarMonth]
+  );
+  const claimsForCalendarMonth = useMemo(
+    () => claims.filter((claim) => claim.serviceDate.startsWith(`${calendarMonth}-`)),
+    [calendarMonth, claims]
+  );
+  const savedClaimsForCalendarMonth = useMemo(
+    () =>
+      claimsForCalendarMonth.filter((claim) =>
+        savedServiceEntryKeysForCalendarMonth.has(`${claim.memberId}:${claim.serviceDate}`)
+      ),
+    [claimsForCalendarMonth, savedServiceEntryKeysForCalendarMonth]
+  );
   const claimsForClaimsMonth = useMemo(
     () => claims.filter((claim) => claim.serviceDate.startsWith(`${claimsMonth}-`)),
     [claims, claimsMonth]
@@ -611,6 +642,39 @@ export function MemberManager({
 
     return merged;
   }, [pendingStatusChanges, recordedStatusByDateForMemberMonth]);
+
+  const claimStatusByDateForMemberMonth = useMemo(() => {
+    if (!serviceForm.memberId) {
+      return new Map<string, string>();
+    }
+
+    const claimByDate = new Map<string, Claim>();
+
+    for (const claim of claims) {
+      if (
+        claim.memberId !== serviceForm.memberId ||
+        !claim.serviceDate.startsWith(`${calendarMonth}-`)
+      ) {
+        continue;
+      }
+
+      const existingClaim = claimByDate.get(claim.serviceDate);
+      if (
+        !existingClaim ||
+        existingClaim.updatedAt < claim.updatedAt ||
+        (existingClaim.updatedAt === claim.updatedAt && existingClaim.id < claim.id)
+      ) {
+        claimByDate.set(claim.serviceDate, claim);
+      }
+    }
+
+    return new Map(
+      Array.from(claimByDate.entries()).map(([serviceDate, claim]) => [
+        serviceDate,
+        claim.status,
+      ])
+    );
+  }, [calendarMonth, claims, serviceForm.memberId]);
 
   const calendarDays = useMemo(
     () => getCalendarDays(calendarMonth),
@@ -1637,15 +1701,19 @@ export function MemberManager({
 
     const today = getTodayDate();
     const monthRange = getMonthDateRange(calendarMonth);
+    const selectedWeekDate = bulkFillWeekDate || today;
     const { start, end } =
       range === "week"
-        ? getWeekDateRange(today)
+        ? getWeekDateRange(selectedWeekDate)
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
+    const affectedMonths =
+      range === "week" ? getMonthsForDateRange(start, end) : [calendarMonth];
+    const rangeLabel = getBulkFillRangeLabel(range, calendarMonth, bulkFillWeekDate);
 
     setIsSaving(true);
     setBusyMessage(
       range === "week"
-        ? "Bulk filling this week's attendance..."
+        ? `Bulk filling ${rangeLabel}...`
         : range === "monthToDate"
           ? "Bulk filling attendance through today..."
           : "Bulk filling the whole month..."
@@ -1719,9 +1787,16 @@ export function MemberManager({
       return;
     }
 
-    const [refreshedRangeResult, refreshedMonthResult] = await Promise.all([
+    const [refreshedRangeResult, ...refreshedMonthResults] = await Promise.all([
       fetchServiceEntriesInRange(supabase, start, end),
-      fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+      ...affectedMonths.map((month) => {
+        const affectedMonthRange = getMonthDateRange(month);
+        return fetchServiceEntriesInRange(
+          supabase,
+          affectedMonthRange.start,
+          affectedMonthRange.end
+        );
+      }),
     ]);
 
     if (refreshedRangeResult.error) {
@@ -1730,10 +1805,12 @@ export function MemberManager({
       return;
     }
 
-    if (refreshedMonthResult.error) {
-      showError(refreshedMonthResult.error.message);
-      setIsSaving(false);
-      return;
+    for (const refreshedMonthResult of refreshedMonthResults) {
+      if (refreshedMonthResult.error) {
+        showError(refreshedMonthResult.error.message);
+        setIsSaving(false);
+        return;
+      }
     }
 
     const refreshedRangeEntries = refreshedRangeResult.data;
@@ -1743,11 +1820,36 @@ export function MemberManager({
     const addedCount = refreshedRangeEntries.filter(
       (entry) => !freshExistingKeys.has(`${entry.memberId}:${entry.serviceDate}`)
     ).length;
-    const monthTotal = refreshedMonthResult.data.length;
+    const refreshedEntriesByMonth = refreshedMonthResults.map((result, index) => ({
+      month: affectedMonths[index],
+      entries: result.data,
+    }));
+    const monthTotal =
+      refreshedEntriesByMonth.find((result) => result.month === calendarMonth)?.entries.length ??
+      serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${calendarMonth}-`)).length;
 
-    setServiceEntries((currentEntries) =>
-      replaceServiceEntriesForMonth(currentEntries, calendarMonth, refreshedMonthResult.data)
-    );
+    setServiceEntries((currentEntries) => {
+      let nextEntries = currentEntries;
+
+      for (const refreshedMonth of refreshedEntriesByMonth) {
+        nextEntries = replaceServiceEntriesForMonth(
+          nextEntries,
+          refreshedMonth.month,
+          refreshedMonth.entries
+        );
+      }
+
+      return nextEntries;
+    });
+    setLoadedDataMonths((currentMonths) => {
+      const nextMonths = new Set(currentMonths);
+
+      for (const affectedMonth of affectedMonths) {
+        nextMonths.add(affectedMonth);
+      }
+
+      return nextMonths;
+    });
 
     await recordAuditEvent({
       action: "services_bulk_filled",
@@ -1758,14 +1860,14 @@ export function MemberManager({
         start,
         end,
         added: addedCount,
-        month: calendarMonth,
+        months: affectedMonths,
         monthTotal,
       },
     });
     showInfo(
       `Added ${addedCount} service ${
         addedCount === 1 ? "entry" : "entries"
-      }. ${monthTotal} recorded in ${formatMonthLabel(calendarMonth)}.`
+      } for ${rangeLabel}. ${monthTotal} recorded in ${formatMonthLabel(calendarMonth)}.`
     );
     setIsSaving(false);
   }
@@ -2608,19 +2710,25 @@ export function MemberManager({
     }
 
     const monthRange = getMonthDateRange(calendarMonth);
-    const serviceCount = serviceEntriesForCalendarMonth.length;
-    const claimCount = claims.filter((claim) =>
-      claim.serviceDate.startsWith(`${calendarMonth}-`)
-    ).length;
+    const serviceIdsToDelete = savedServiceEntriesForCalendarMonth.map((entry) => entry.id);
+    const claimIdsToDelete = savedClaimsForCalendarMonth.map((claim) => claim.id);
+    const serviceCount = serviceIdsToDelete.length;
+    const claimCount = claimIdsToDelete.length;
+
+    if (serviceCount === 0 && claimCount === 0) {
+      showInfo(`No saved entries to reset for ${formatMonthLabel(calendarMonth)}.`);
+      setIsMonthResetOpen(false);
+      setMonthResetConfirmation("");
+      return;
+    }
 
     setIsSaving(true);
-    setBusyMessage(`Resetting ${formatMonthLabel(calendarMonth)} services and claims...`);
+    setBusyMessage(`Resetting ${formatMonthLabel(calendarMonth)} saved services and claims...`);
 
-    const claimsResult = await supabase
-      .from("claims")
-      .delete()
-      .gte("service_date", monthRange.start)
-      .lte("service_date", monthRange.end);
+    const claimsResult =
+      claimIdsToDelete.length > 0
+        ? await supabase.from("claims").delete().in("id", claimIdsToDelete)
+        : { error: null };
 
     if (claimsResult.error) {
       showError(claimsResult.error.message);
@@ -2628,11 +2736,10 @@ export function MemberManager({
       return;
     }
 
-    const servicesResult = await supabase
-      .from("service_entries")
-      .delete()
-      .gte("service_date", monthRange.start)
-      .lte("service_date", monthRange.end);
+    const servicesResult =
+      serviceIdsToDelete.length > 0
+        ? await supabase.from("service_entries").delete().in("id", serviceIdsToDelete)
+        : { error: null };
 
     if (servicesResult.error) {
       showError(servicesResult.error.message);
@@ -2655,32 +2762,34 @@ export function MemberManager({
       return;
     }
 
-    if (remainingServicesResult.data.length > 0 || remainingClaimsResult.data.length > 0) {
-      setServiceEntries((currentEntries) =>
-        replaceServiceEntriesForMonth(
-          currentEntries,
-          calendarMonth,
-          remainingServicesResult.data
-        )
-      );
-      setClaims((currentClaims) =>
-        replaceClaimsForMonth(currentClaims, calendarMonth, remainingClaimsResult.data)
-      );
+    const serviceIdsToDeleteSet = new Set(serviceIdsToDelete);
+    const claimIdsToDeleteSet = new Set(claimIdsToDelete);
+    const remainingTargetedServices = remainingServicesResult.data.filter((entry) =>
+      serviceIdsToDeleteSet.has(entry.id)
+    );
+    const remainingTargetedClaims = remainingClaimsResult.data.filter((claim) =>
+      claimIdsToDeleteSet.has(claim.id)
+    );
+
+    setServiceEntries((currentEntries) =>
+      replaceServiceEntriesForMonth(currentEntries, calendarMonth, remainingServicesResult.data)
+    );
+    setClaims((currentClaims) =>
+      replaceClaimsForMonth(currentClaims, calendarMonth, remainingClaimsResult.data)
+    );
+
+    if (remainingTargetedServices.length > 0 || remainingTargetedClaims.length > 0) {
       showError(
-        `Reset did not fully clear ${formatMonthLabel(calendarMonth)}. ${
-          remainingServicesResult.data.length
-        } service ${remainingServicesResult.data.length === 1 ? "entry remains" : "entries remain"} and ${
-          remainingClaimsResult.data.length
-        } claim${remainingClaimsResult.data.length === 1 ? " remains" : "s remain"}.`
+        `Reset did not fully clear saved entries for ${formatMonthLabel(calendarMonth)}. ${
+          remainingTargetedServices.length
+        } service ${remainingTargetedServices.length === 1 ? "entry remains" : "entries remain"} and ${
+          remainingTargetedClaims.length
+        } claim${remainingTargetedClaims.length === 1 ? " remains" : "s remain"}.`
       );
       setIsSaving(false);
       return;
     }
 
-    setServiceEntries((currentEntries) =>
-      replaceServiceEntriesForMonth(currentEntries, calendarMonth, [])
-    );
-    setClaims((currentClaims) => replaceClaimsForMonth(currentClaims, calendarMonth, []));
     setLoadedDataMonths((currentMonths) => new Set(currentMonths).add(calendarMonth));
     setDateOverrides((currentOverrides) =>
       clearCalendarOverridesForMemberMonth(
@@ -2702,7 +2811,7 @@ export function MemberManager({
     await recordAuditEvent({
       action: "month_reset",
       entityType: "service",
-      summary: `Reset services and claims for ${formatMonthLabel(calendarMonth)}.`,
+      summary: `Reset saved services and claims for ${formatMonthLabel(calendarMonth)}.`,
       metadata: {
         admin: true,
         month: calendarMonth,
@@ -2711,9 +2820,9 @@ export function MemberManager({
       },
     });
     showInfo(
-      `Reset ${formatMonthLabel(calendarMonth)}: deleted ${serviceCount} service ${
+      `Reset ${formatMonthLabel(calendarMonth)}: deleted ${serviceCount} saved service ${
         serviceCount === 1 ? "entry" : "entries"
-      } and ${claimCount} claim${claimCount === 1 ? "" : "s"}.`
+      } and ${claimCount} claim${claimCount === 1 ? "" : "s"}. Holds, medicals, and vacations were kept.`
     );
     setIsSaving(false);
   }
@@ -3374,48 +3483,58 @@ export function MemberManager({
                       who didn&apos;t attend.
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={isSaving}
-                      onClick={() => handleBulkFillServices("week")}
-                    >
-                      <CalendarRangeIcon data-icon="inline-start" />
-                      This week
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={isSaving}
-                      onClick={() => handleBulkFillServices("monthToDate")}
-                    >
-                      <CalendarClockIcon data-icon="inline-start" />
-                      Through today
-                    </Button>
-	                    <Button
-	                      type="button"
-	                      variant="outline"
-	                      disabled={isSaving}
-	                      onClick={() => handleBulkFillServices("month")}
-                    >
-	                      <CalendarDaysIcon data-icon="inline-start" />
-	                      Whole month
-	                    </Button>
-	                    <Button
-	                      type="button"
-	                      variant="destructive"
-	                      disabled={isSaving}
-	                      onClick={() => {
-	                        setMonthResetConfirmation("");
-	                        setIsMonthResetOpen(true);
-	                      }}
-	                    >
-	                      <Trash2Icon data-icon="inline-start" />
-	                      Reset month
-	                    </Button>
-	                  </CardContent>
-	                </Card>
+                  <CardContent className="grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] lg:items-end">
+                    <Field label="Week containing" htmlFor="bulk-fill-week">
+                      <Input
+                        id="bulk-fill-week"
+                        type="date"
+                        value={bulkFillWeekDate}
+                        onChange={(event) => setBulkFillWeekDate(event.target.value)}
+                      />
+                    </Field>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isSaving}
+                        onClick={() => setBulkFillTarget("week")}
+                      >
+                        <CalendarRangeIcon data-icon="inline-start" />
+                        Selected week
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isSaving}
+                        onClick={() => setBulkFillTarget("monthToDate")}
+                      >
+                        <CalendarClockIcon data-icon="inline-start" />
+                        Through today
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isSaving}
+                        onClick={() => setBulkFillTarget("month")}
+                      >
+                        <CalendarDaysIcon data-icon="inline-start" />
+                        Whole month
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={isSaving}
+                        onClick={() => {
+                          setMonthResetConfirmation("");
+                          setIsMonthResetOpen(true);
+                        }}
+                      >
+                        <Trash2Icon data-icon="inline-start" />
+                        Reset month
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
 
                 <Card>
                   <CardHeader>
@@ -3574,6 +3693,7 @@ export function MemberManager({
                         <div className="relative">
                           <ServiceCalendar
                             activeStatus={serviceForm.serviceLabel}
+                            claimStatusByDate={claimStatusByDateForMemberMonth}
                             month={calendarMonth}
                             days={calendarDays}
                             expectedDates={expectedServiceDates}
@@ -4511,24 +4631,19 @@ export function MemberManager({
           <AlertDialogHeader>
             <AlertDialogTitle>Reset this month?</AlertDialogTitle>
             <AlertDialogDescription>
-              This deletes all services and claims for {formatMonthLabel(calendarMonth)}.
-              Members stay active, but the month&apos;s attendance and claim queue will be empty.
+              This deletes saved (Attended) service entries and their claims for{" "}
+              {formatMonthLabel(calendarMonth)}. Hold, Medical, and Vacation entries are left
+              in place, and members stay active.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">Services</span>
-              <span className="font-medium">{serviceEntriesForCalendarMonth.length}</span>
+              <span className="text-muted-foreground">Saved services</span>
+              <span className="font-medium">{savedServiceEntriesForCalendarMonth.length}</span>
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Claims</span>
-              <span className="font-medium">
-                {
-                  claims.filter((claim) =>
-                    claim.serviceDate.startsWith(`${calendarMonth}-`)
-                  ).length
-                }
-              </span>
+              <span className="font-medium">{savedClaimsForCalendarMonth.length}</span>
             </div>
             <Field label='Type "RESET" to confirm' htmlFor="month-reset-confirmation">
               <Input
@@ -4549,6 +4664,46 @@ export function MemberManager({
               }
             >
               Reset month
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={bulkFillTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setBulkFillTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bulk fill attendance?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This adds expected service days for every active member for{" "}
+              {bulkFillTarget
+                ? getBulkFillRangeLabel(bulkFillTarget, calendarMonth, bulkFillWeekDate)
+                : ""}
+              . You can remove individual entries afterward for anyone who
+              didn&apos;t attend.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSaving}
+              onClick={() => {
+                if (!bulkFillTarget) {
+                  return;
+                }
+
+                const range = bulkFillTarget;
+                setBulkFillTarget(null);
+                void handleBulkFillServices(range);
+              }}
+            >
+              Bulk fill
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4838,6 +4993,52 @@ function formatMonthLabel(month: string) {
     month: "long",
     year: "numeric",
   });
+}
+
+function formatDateRangeLabel(start: string, end: string) {
+  const startLabel = new Date(`${start}T00:00:00`).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+  const endLabel = new Date(`${end}T00:00:00`).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return `${startLabel} - ${endLabel}`;
+}
+
+function getBulkFillRangeLabel(
+  range: "week" | "monthToDate" | "month",
+  calendarMonth: string,
+  bulkFillWeekDate: string
+) {
+  if (range === "monthToDate") {
+    return "attendance through today";
+  }
+
+  if (range === "month") {
+    return `all of ${formatMonthLabel(calendarMonth)}`;
+  }
+
+  const selectedWeekDate = bulkFillWeekDate || getTodayDate();
+  const { start, end } = getWeekDateRange(selectedWeekDate);
+  return `the week of ${formatDateRangeLabel(start, end)}`;
+}
+
+function getMonthsForDateRange(start: string, end: string) {
+  const months: string[] = [];
+  const current = new Date(`${start.slice(0, 7)}-01T00:00:00`);
+  const last = new Date(`${end.slice(0, 7)}-01T00:00:00`);
+
+  while (current <= last) {
+    const month = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}`;
+    months.push(month);
+    current.setMonth(current.getMonth() + 1);
+  }
+
+  return months;
 }
 
 async function reconcileSafeClaimsForServiceChanges(

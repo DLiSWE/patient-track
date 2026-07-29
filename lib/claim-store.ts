@@ -31,11 +31,13 @@ export const claimStatusOptions = [
 
 export const defaultClaimStatus: string = claimStatusOptions[0].value;
 
+// Kept visually distinct from the service-calendar cell colors (emerald/violet/slate/blue,
+// plus the amber/rose/zinc overlay states) so a claim's status dot never reads as a calendar status.
 export const claimStatusStyles: Record<string, { badge: string; dot: string }> = {
   required: {
     badge:
-      "ring-1 ring-inset ring-violet-500 bg-violet-100 text-violet-950 dark:bg-violet-950 dark:text-violet-100",
-    dot: "bg-violet-500",
+      "ring-1 ring-inset ring-indigo-500 bg-indigo-100 text-indigo-950 dark:bg-indigo-950 dark:text-indigo-100",
+    dot: "bg-indigo-500",
   },
   created: {
     badge:
@@ -44,23 +46,23 @@ export const claimStatusStyles: Record<string, { badge: string; dot: string }> =
   },
   pending: {
     badge:
-      "ring-1 ring-inset ring-slate-500 bg-slate-200 text-slate-950 dark:bg-slate-800 dark:text-slate-100",
-    dot: "bg-slate-500",
+      "ring-1 ring-inset ring-fuchsia-500 bg-fuchsia-100 text-fuchsia-950 dark:bg-fuchsia-950 dark:text-fuchsia-100",
+    dot: "bg-fuchsia-500",
   },
   submitted: {
     badge:
-      "ring-1 ring-inset ring-sky-500 bg-sky-100 text-sky-950 dark:bg-sky-950 dark:text-sky-100",
-    dot: "bg-sky-500",
+      "ring-1 ring-inset ring-cyan-500 bg-cyan-100 text-cyan-950 dark:bg-cyan-950 dark:text-cyan-100",
+    dot: "bg-cyan-500",
   },
   accepted: {
     badge:
-      "ring-1 ring-inset ring-emerald-500 bg-emerald-100 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100",
-    dot: "bg-emerald-500",
+      "ring-1 ring-inset ring-lime-500 bg-lime-100 text-lime-950 dark:bg-lime-950 dark:text-lime-100",
+    dot: "bg-lime-500",
   },
   failed: {
     badge:
-      "ring-1 ring-inset ring-amber-500 bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100",
-    dot: "bg-amber-500",
+      "ring-1 ring-inset ring-orange-500 bg-orange-100 text-orange-950 dark:bg-orange-950 dark:text-orange-100",
+    dot: "bg-orange-500",
   },
 };
 

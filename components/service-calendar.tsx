@@ -2,6 +2,7 @@ import { RotateCcwIcon, XIcon } from "lucide-react";
 
 import { Field } from "@/components/form-field";
 import { Button } from "@/components/ui/button";
+import { claimStatusOptions, getClaimStatusStyle } from "@/lib/claim-store";
 import { Input } from "@/components/ui/input";
 import { type CalendarDay, weekdayLabels } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
@@ -69,6 +70,7 @@ const calendarLegend = [
 
 export function ServiceCalendar({
   activeStatus = "Attended",
+  claimStatusByDate,
   days,
   expectedDates,
   month,
@@ -85,6 +87,7 @@ export function ServiceCalendar({
   unavailableDates,
 }: {
   activeStatus?: string;
+  claimStatusByDate?: Map<string, string>;
   days: Array<CalendarDay | null>;
   expectedDates: string[];
   month: string;
@@ -141,6 +144,28 @@ export function ServiceCalendar({
         ))}
       </div>
 
+      <div className="rounded-md border border-dashed px-3 py-2">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">
+          Claim status (dot in corner of day)
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {claimStatusOptions.map((status) => (
+            <div
+              key={status.value}
+              className="flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <span
+                className={cn(
+                  "size-2.5 shrink-0 rounded-full",
+                  getClaimStatusStyle(status.value).dot
+                )}
+              />
+              {status.label}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
         <span className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", activeStatusStyle.dot)} />
         <span>
@@ -176,6 +201,7 @@ export function ServiceCalendar({
           const isUnavailable = Boolean(unavailableDates?.has(day.date));
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
+          const claimStatus = claimStatusByDate?.get(day.date) ?? null;
           const willChangeStatus =
             !isRecorded || recordedStatus.toLowerCase() !== activeStatus.toLowerCase();
           const shouldChangeStatus =
@@ -199,13 +225,13 @@ export function ServiceCalendar({
                     : shouldChangeStatus
                       ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
                       : isRecorded
-                        ? `${recordedStatus} — click to remove (needs Save)`
+                        ? `${recordedStatus} - click to remove (needs Save)`
                       : !isRecorded
                         ? `Click to queue as ${activeStatus} (needs Save)`
                         : undefined
               }
               className={cn(
-                "flex size-10 flex-col items-center justify-center gap-0 rounded-none border border-border text-sm font-medium transition-colors sm:size-14 sm:gap-0.5 sm:rounded-md sm:text-base",
+                "relative flex size-10 flex-col items-center justify-center gap-0 rounded-none border border-border text-sm font-medium transition-colors sm:size-14 sm:gap-0.5 sm:rounded-md sm:text-base",
                 "bg-background hover:bg-muted",
                 isClickPreviewable && !isUnavailable && activeStatusStyle.hoverRing,
                 isSaved && getServiceStatusStyle(recordedStatus).cell,
@@ -225,6 +251,15 @@ export function ServiceCalendar({
                 shouldChangeStatus ? onStatusClick?.(day.date) : onToggleDate(day.date)
               }
             >
+              {claimStatus ? (
+                <span
+                  className={cn(
+                    "absolute right-1 top-1 size-2.5 rounded-full ring-2 ring-background sm:right-1.5 sm:top-1.5 sm:size-3",
+                    getClaimStatusStyle(claimStatus).dot
+                  )}
+                  aria-hidden="true"
+                />
+              ) : null}
               <span>{day.dayNumber}</span>
               {isSaved && (recordedStatus.toLowerCase() !== "attended" || isPending) ? (
                 <span className="text-[7px] leading-none font-normal uppercase sm:text-[9px]">
@@ -235,6 +270,11 @@ export function ServiceCalendar({
               {isNew && newStatus.toLowerCase() !== "attended" ? (
                 <span className="text-[7px] leading-none font-normal uppercase sm:text-[9px]">
                   {newStatus}*
+                </span>
+              ) : null}
+              {claimStatus ? (
+                <span className="text-[7px] leading-none font-normal uppercase text-muted-foreground sm:text-[9px]">
+                  CLM
                 </span>
               ) : null}
             </button>
