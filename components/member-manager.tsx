@@ -2525,6 +2525,8 @@ export function MemberManager({
       return;
     }
 
+    const verifiedSession = session;
+
     setDeleteAuthError(null);
     setIsSaving(true);
     setBusyMessage("Confirming password and deleting member...");
@@ -2538,6 +2540,25 @@ export function MemberManager({
       setDeleteAuthError("Password confirmation failed.");
       setIsSaving(false);
       return;
+    }
+
+    // signInWithPassword installs a fresh session that hasn't cleared MFA yet,
+    // which trips the app's own two-factor gate mid-delete. Restore the
+    // already-verified session immediately so the password check has no
+    // lasting effect on auth state.
+    if (verifiedSession) {
+      const { error: restoreError } = await supabase.auth.setSession({
+        access_token: verifiedSession.access_token,
+        refresh_token: verifiedSession.refresh_token,
+      });
+
+      if (restoreError) {
+        setDeleteAuthError(
+          "Password confirmed, but the session could not be restored. Please sign in again."
+        );
+        setIsSaving(false);
+        return;
+      }
     }
 
     const deletedMember = deleteTarget;

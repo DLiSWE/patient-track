@@ -16,6 +16,7 @@ import {
   PencilIcon,
   PlayCircleIcon,
   PlusIcon,
+  RotateCcwIcon,
   Trash2Icon,
 } from "lucide-react";
 
@@ -171,6 +172,7 @@ export function ClaimsDashboard({
   const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
   const [form, setForm] = useState<ClaimFormValues>(createEmptyClaimForm());
   const [deleteTarget, setDeleteTarget] = useState<Claim | null>(null);
+  const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
 
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
 
@@ -876,6 +878,81 @@ export function ClaimsDashboard({
     setBusyMessage(null);
   }
 
+  async function handleResetFailedClaims() {
+    if (!supabase) {
+      return;
+    }
+
+    const failedClaims = canonicalClaims.filter(
+      (claim) => claim.status.toLowerCase() === "failed"
+    );
+
+    if (failedClaims.length === 0) {
+      toast.success("No failed claims to reset.");
+      setIsResetFailedOpen(false);
+      return;
+    }
+
+    const failedIds = failedClaims.map((claim) => claim.id);
+    const monthRange = getMonthDateRange(month);
+
+    setIsSaving(true);
+    setBusyMessage(
+      `Resetting ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} to required...`
+    );
+
+    const { error } = await supabase
+      .from("claims")
+      .update({
+        status: "Required",
+        last_failure_reason: null,
+        last_attempted_at: null,
+        submitted_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .in("id", failedIds);
+
+    if (error) {
+      toast.error(error.message);
+      setIsSaving(false);
+      setBusyMessage(null);
+      return;
+    }
+
+    const refreshedClaimsResult = await fetchClaimsInRange(
+      supabase,
+      monthRange.start,
+      monthRange.end
+    );
+
+    if (refreshedClaimsResult.error) {
+      toast.error(refreshedClaimsResult.error.message);
+      setIsSaving(false);
+      setBusyMessage(null);
+      return;
+    }
+
+    updateClaims(() => getCanonicalClaims(refreshedClaimsResult.data));
+    await onMonthDataRefresh?.(month);
+    await onAudit?.({
+      action: "claims_failed_reset",
+      entityType: "claim",
+      summary: `Reset ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} back to required.`,
+      metadata: {
+        month,
+        count: failedClaims.length,
+        claimIds: failedIds,
+      },
+    });
+    toast.success(
+      `Reset ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} to required.`
+    );
+
+    setIsResetFailedOpen(false);
+    setIsSaving(false);
+    setBusyMessage(null);
+  }
+
   function exportClaimStatusReport() {
     const rows = canonicalClaims.map((claim) => {
       const member = memberById.get(claim.memberId);
@@ -1000,7 +1077,7 @@ export function ClaimsDashboard({
           <CardDescription>
             Current bot queue and completion state for {formatMonthLabel(month)}.
           </CardDescription>
-          <CardAction>
+          <CardAction className="flex flex-wrap items-center justify-end gap-2">
             <Badge
               className={cn(
                 botSummary.failed > 0
@@ -1016,6 +1093,18 @@ export function ClaimsDashboard({
                   ? "Ready to run"
                   : "Caught up"}
             </Badge>
+            {botSummary.failed > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isSaving}
+                onClick={() => setIsResetFailedOpen(true)}
+              >
+                <RotateCcwIcon data-icon="inline-start" />
+                Reset failed to required
+              </Button>
+            ) : null}
           </CardAction>
         </CardHeader>
         <CardContent className="grid gap-4">
@@ -1624,6 +1713,37 @@ export function ClaimsDashboard({
               disabled={isSaving}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={isResetFailedOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setIsResetFailedOpen(false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset failed claims?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This sets every failed claim in {formatMonthLabel(month)} back to{" "}
+              &quot;Required&quot; so the bot can retry them, and clears each one&apos;s
+              failure reason and last attempt. This affects{" "}
+              {stats.Failed ?? 0} claim{(stats.Failed ?? 0) === 1 ? "" : "s"} across all
+              members.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleResetFailedClaims}
+              disabled={isSaving || (stats.Failed ?? 0) === 0}
+            >
+              Reset {stats.Failed ?? 0} to required
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
