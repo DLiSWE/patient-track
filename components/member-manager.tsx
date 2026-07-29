@@ -1699,6 +1699,7 @@ export function MemberManager({
       return;
     }
 
+    const supabaseClient = supabase;
     const today = getTodayDate();
     const monthRange = getMonthDateRange(calendarMonth);
     const selectedWeekDate = bulkFillWeekDate || today;
@@ -1719,7 +1720,7 @@ export function MemberManager({
           : "Bulk filling the whole month..."
     );
 
-    const existingResult = await fetchServiceEntriesInRange(supabase, start, end);
+    const existingResult = await fetchServiceEntriesInRange(supabaseClient, start, end);
 
     if (existingResult.error) {
       showError(existingResult.error.message);
@@ -1774,7 +1775,7 @@ export function MemberManager({
       return;
     }
 
-    const { error } = await supabase
+    const { error } = await supabaseClient
       .from("service_entries")
       .upsert(inserts, {
         ignoreDuplicates: true,
@@ -1788,11 +1789,11 @@ export function MemberManager({
     }
 
     const [refreshedRangeResult, ...refreshedMonthResults] = await Promise.all([
-      fetchServiceEntriesInRange(supabase, start, end),
+      fetchServiceEntriesInRange(supabaseClient, start, end),
       ...affectedMonths.map((month) => {
         const affectedMonthRange = getMonthDateRange(month);
         return fetchServiceEntriesInRange(
-          supabase,
+          supabaseClient,
           affectedMonthRange.start,
           affectedMonthRange.end
         );
