@@ -114,6 +114,7 @@ type MemberClaimGroup = {
 
 type ProviderClaimBatch = {
   accepted: number;
+  claimed: number;
   claims: Claim[];
   created: number;
   failed: number;
@@ -173,6 +174,7 @@ export function ClaimsDashboard({
   const [form, setForm] = useState<ClaimFormValues>(createEmptyClaimForm());
   const [deleteTarget, setDeleteTarget] = useState<Claim | null>(null);
   const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
+  const [claimWeekDate, setClaimWeekDate] = useState(getTodayDate());
 
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
 
@@ -447,6 +449,7 @@ export function ClaimsDashboard({
 
       const nextBatch: ProviderClaimBatch = {
         accepted: 0,
+        claimed: 0,
         claims: [],
         created: 0,
         failed: 0,
@@ -471,6 +474,8 @@ export function ClaimsDashboard({
 
       if (status === "accepted") {
         batch.accepted += 1;
+      } else if (status === "claimed") {
+        batch.claimed += 1;
       } else if (status === "created") {
         batch.created += 1;
       } else if (status === "failed") {
@@ -501,10 +506,11 @@ export function ClaimsDashboard({
     const completed = created + accepted;
     const failed = stats.Failed ?? 0;
     const required = stats.Required ?? 0;
+    const claimed = stats.Claimed ?? 0;
     const pending = stats.Pending ?? 0;
     const submitted = stats.Submitted ?? 0;
     const runnable = required + failed;
-    const inProgress = pending + submitted;
+    const inProgress = claimed + pending + submitted;
     const total = canonicalClaims.length;
     const lastActivity = canonicalClaims
       .map((claim) => claim.lastAttemptedAt ?? claim.submittedAt ?? claim.updatedAt)
@@ -738,16 +744,17 @@ export function ClaimsDashboard({
 
     const today = getTodayDate();
     const monthRange = getMonthDateRange(month);
+    const selectedWeekDate = claimWeekDate || today;
     const { start, end } =
       range === "week"
-        ? getWeekDateRange(today)
+        ? getWeekDateRange(selectedWeekDate)
         : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
 
     const memberMap = new Map(members.map((member) => [member.id, member]));
     setIsSaving(true);
     setBusyMessage(
       range === "week"
-        ? "Generating required claims for this week..."
+        ? `Generating required claims for the week of ${start}...`
         : range === "monthToDate"
           ? "Generating required claims through today..."
           : "Generating required claims for the whole month..."
@@ -1037,7 +1044,16 @@ export function ClaimsDashboard({
             />
           </CardAction>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
+        <CardContent className="grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] lg:items-end">
+          <Field label="Week containing" htmlFor="claims-generate-week">
+            <Input
+              id="claims-generate-week"
+              type="date"
+              value={claimWeekDate}
+              onChange={(event) => setClaimWeekDate(event.target.value)}
+            />
+          </Field>
+          <div className="flex flex-wrap gap-2">
           <Button
             type="button"
             variant="outline"
@@ -1045,7 +1061,7 @@ export function ClaimsDashboard({
             onClick={() => handleGenerateRequiredClaims("week")}
           >
             <CalendarRangeIcon data-icon="inline-start" />
-            This week
+            Selected week
           </Button>
           <Button
             type="button"
@@ -1065,6 +1081,7 @@ export function ClaimsDashboard({
             <CalendarDaysIcon data-icon="inline-start" />
             Whole month
           </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -1323,9 +1340,10 @@ export function ClaimsDashboard({
                           : "Clear"}
                     </Badge>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-7">
                     <BatchMetric label="Ready" value={batch.readyToGenerate.length} />
                     <BatchMetric label="Required" value={batch.required} />
+                    <BatchMetric label="Claimed" value={batch.claimed} />
                     <BatchMetric label="Pending" value={batch.pending} />
                     <BatchMetric label="Submitted" value={batch.submitted} />
                     <BatchMetric label="Accepted" value={batch.accepted} />

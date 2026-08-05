@@ -513,19 +513,22 @@ export function MemberManager({
     return entriesByMemberDate;
   }, [serviceEntries]);
   const filteredServiceMembers = useMemo(() => {
+    // Discontinued members stay selectable here (unlike activeMembers) so
+    // missed/backdated service entries can still be added for dates before
+    // their discontinue date. The calendar itself blocks dates after it.
     const normalizedQuery = serviceMemberQuery.trim().toLowerCase();
 
     if (!normalizedQuery) {
-      return activeMembers;
+      return members;
     }
 
-    return activeMembers.filter((member) =>
+    return members.filter((member) =>
       [member.displayName, member.provider, member.serviceDays]
         .join(" ")
         .toLowerCase()
         .includes(normalizedQuery)
     );
-  }, [activeMembers, serviceMemberQuery]);
+  }, [members, serviceMemberQuery]);
 
   const todayServiceCount = useMemo(() => {
     const today = new Date().toLocaleDateString("en-CA");
@@ -3208,7 +3211,7 @@ export function MemberManager({
                   className={cn(
                     "shrink-0 border",
                     hasMfaFactor
-                      ? "border-emerald-300/30 bg-emerald-300/15 text-emerald-100"
+                      ? "border-emerald-300/30 bg-emerald-300/15 text-emerald-900 dark:text-emerald-100"
                       : "border-sidebar-border bg-transparent text-sidebar-foreground/70"
                   )}
                   variant="outline"
@@ -3656,8 +3659,16 @@ export function MemberManager({
                                     onMouseDown={(event) => event.preventDefault()}
                                     onClick={() => handleServiceMemberChange(member.id)}
                                   >
-                                    <span className="truncate font-medium">
-                                      {member.displayName}
+                                    <span className="flex min-w-0 items-center gap-2 truncate font-medium">
+                                      <span className="truncate">{member.displayName}</span>
+                                      {!isMemberActiveOnDate(member, todayDate) ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="shrink-0 border-muted-foreground/30 text-[10px] font-normal text-muted-foreground"
+                                        >
+                                          Discontinued
+                                        </Badge>
+                                      ) : null}
                                     </span>
                                     <span className="shrink-0 text-xs text-muted-foreground">
                                       {member.provider

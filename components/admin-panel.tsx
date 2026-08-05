@@ -180,7 +180,10 @@ export function AdminPanel({
                         {event.attemptedEmail || "Unknown"}
                       </TableCell>
                       <TableCell>
-                        <Badge className="border-red-300/30 bg-red-300/10 text-red-100" variant="outline">
+                        <Badge
+                          className="border-red-300/30 bg-red-300/10 text-red-900 dark:text-red-100"
+                          variant="outline"
+                        >
                           {event.attemptCount}
                         </Badge>
                       </TableCell>
@@ -270,12 +273,12 @@ function AdminMetric({
 }) {
   const toneClass =
     tone === "gold"
-      ? "border-amber-300/35 bg-amber-300/10 text-amber-100"
+      ? "border-amber-300/35 bg-amber-300/10 text-amber-900 dark:text-amber-100"
       : tone === "green"
-        ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100"
+        ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-900 dark:text-emerald-100"
         : tone === "red"
-          ? "border-red-300/30 bg-red-300/10 text-red-100"
-          : "border-sky-300/30 bg-sky-300/10 text-sky-100";
+          ? "border-red-300/30 bg-red-300/10 text-red-900 dark:text-red-100"
+          : "border-sky-300/30 bg-sky-300/10 text-sky-900 dark:text-sky-100";
 
   return (
     <Card className={toneClass}>
