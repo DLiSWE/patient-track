@@ -18,7 +18,6 @@ import {
   BarChart3Icon,
   BellIcon,
   CalendarCheckIcon,
-  CalendarClockIcon,
   CalendarDaysIcon,
   CalendarRangeIcon,
   ChevronLeftIcon,
@@ -152,7 +151,6 @@ import {
   getMonthDateRange,
   getMonthInputValue,
   getSummaryStats,
-  getWeekDateRange,
   isDateInCurrentMonth,
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
@@ -243,10 +241,9 @@ export function MemberManager({
   const [calendarMonth, setCalendarMonth] = useState(getMonthInputValue());
   const [summaryMonth, setSummaryMonth] = useState(getMonthInputValue());
   const [claimsMonth, setClaimsMonth] = useState(getMonthInputValue());
-  const [bulkFillWeekDate, setBulkFillWeekDate] = useState(getTodayDate());
-  const [bulkFillTarget, setBulkFillTarget] = useState<
-    "week" | "monthToDate" | "month" | null
-  >(null);
+  const [bulkFillStartDate, setBulkFillStartDate] = useState(getTodayDate());
+  const [bulkFillEndDate, setBulkFillEndDate] = useState(getTodayDate());
+  const [isBulkFillConfirmOpen, setIsBulkFillConfirmOpen] = useState(false);
   const [loadedDataMonths, setLoadedDataMonths] = useState<Set<string>>(
     () => new Set()
   );
@@ -1697,31 +1694,29 @@ export function MemberManager({
     setIsSaving(false);
   }
 
-  async function handleBulkFillServices(range: "week" | "monthToDate" | "month") {
+  async function handleBulkFillServices() {
     if (!supabase) {
       return;
     }
 
+    if (!bulkFillStartDate || !bulkFillEndDate) {
+      showError("Pick a start and end date first.");
+      return;
+    }
+
+    if (bulkFillEndDate < bulkFillStartDate) {
+      showError("End date must be on or after the start date.");
+      return;
+    }
+
     const supabaseClient = supabase;
-    const today = getTodayDate();
-    const monthRange = getMonthDateRange(calendarMonth);
-    const selectedWeekDate = bulkFillWeekDate || today;
-    const { start, end } =
-      range === "week"
-        ? getWeekDateRange(selectedWeekDate)
-        : { start: monthRange.start, end: range === "monthToDate" ? today : monthRange.end };
-    const affectedMonths =
-      range === "week" ? getMonthsForDateRange(start, end) : [calendarMonth];
-    const rangeLabel = getBulkFillRangeLabel(range, calendarMonth, bulkFillWeekDate);
+    const start = bulkFillStartDate;
+    const end = bulkFillEndDate;
+    const affectedMonths = getMonthsForDateRange(start, end);
+    const rangeLabel = formatDateRangeLabel(start, end);
 
     setIsSaving(true);
-    setBusyMessage(
-      range === "week"
-        ? `Bulk filling ${rangeLabel}...`
-        : range === "monthToDate"
-          ? "Bulk filling attendance through today..."
-          : "Bulk filling the whole month..."
-    );
+    setBusyMessage(`Bulk filling ${rangeLabel}...`);
 
     const existingResult = await fetchServiceEntriesInRange(supabaseClient, start, end);
 
@@ -1860,7 +1855,6 @@ export function MemberManager({
       entityType: "service",
       summary: `Bulk filled ${addedCount} service ${addedCount === 1 ? "entry" : "entries"}.`,
       metadata: {
-        range,
         start,
         end,
         added: addedCount,
@@ -3508,42 +3502,34 @@ export function MemberManager({
                       who didn&apos;t attend.
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] lg:items-end">
-                    <Field label="Week containing" htmlFor="bulk-fill-week">
+                  <CardContent className="grid gap-3 lg:grid-cols-[minmax(0,10rem)_minmax(0,10rem)_minmax(0,1fr)] lg:items-end">
+                    <Field label="Start date" htmlFor="bulk-fill-start">
                       <Input
-                        id="bulk-fill-week"
+                        id="bulk-fill-start"
                         type="date"
-                        value={bulkFillWeekDate}
-                        onChange={(event) => setBulkFillWeekDate(event.target.value)}
+                        value={bulkFillStartDate}
+                        max={bulkFillEndDate || undefined}
+                        onChange={(event) => setBulkFillStartDate(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="End date" htmlFor="bulk-fill-end">
+                      <Input
+                        id="bulk-fill-end"
+                        type="date"
+                        value={bulkFillEndDate}
+                        min={bulkFillStartDate || undefined}
+                        onChange={(event) => setBulkFillEndDate(event.target.value)}
                       />
                     </Field>
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="button"
                         variant="outline"
-                        disabled={isSaving}
-                        onClick={() => setBulkFillTarget("week")}
+                        disabled={isSaving || !bulkFillStartDate || !bulkFillEndDate}
+                        onClick={() => setIsBulkFillConfirmOpen(true)}
                       >
                         <CalendarRangeIcon data-icon="inline-start" />
-                        Selected week
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={isSaving}
-                        onClick={() => setBulkFillTarget("monthToDate")}
-                      >
-                        <CalendarClockIcon data-icon="inline-start" />
-                        Through today
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={isSaving}
-                        onClick={() => setBulkFillTarget("month")}
-                      >
-                        <CalendarDaysIcon data-icon="inline-start" />
-                        Whole month
+                        Bulk fill selected range
                       </Button>
                       <Button
                         type="button"
@@ -4703,20 +4689,16 @@ export function MemberManager({
       </AlertDialog>
 
       <AlertDialog
-        open={bulkFillTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setBulkFillTarget(null);
-          }
-        }}
+        open={isBulkFillConfirmOpen}
+        onOpenChange={(open) => setIsBulkFillConfirmOpen(open)}
       >
         <AlertDialogContent className="gap-5">
           <AlertDialogHeader>
             <AlertDialogTitle>Bulk fill attendance?</AlertDialogTitle>
             <AlertDialogDescription>
               This adds expected service days for every active member for{" "}
-              {bulkFillTarget
-                ? getBulkFillRangeLabel(bulkFillTarget, calendarMonth, bulkFillWeekDate)
+              {bulkFillStartDate && bulkFillEndDate
+                ? formatDateRangeLabel(bulkFillStartDate, bulkFillEndDate)
                 : ""}
               . You can remove individual entries afterward for anyone who
               didn&apos;t attend.
@@ -4727,13 +4709,8 @@ export function MemberManager({
             <AlertDialogAction
               disabled={isSaving}
               onClick={() => {
-                if (!bulkFillTarget) {
-                  return;
-                }
-
-                const range = bulkFillTarget;
-                setBulkFillTarget(null);
-                void handleBulkFillServices(range);
+                setIsBulkFillConfirmOpen(false);
+                void handleBulkFillServices();
               }}
             >
               Bulk fill
@@ -5040,24 +5017,6 @@ function formatDateRangeLabel(start: string, end: string) {
   });
 
   return `${startLabel} - ${endLabel}`;
-}
-
-function getBulkFillRangeLabel(
-  range: "week" | "monthToDate" | "month",
-  calendarMonth: string,
-  bulkFillWeekDate: string
-) {
-  if (range === "monthToDate") {
-    return "attendance through today";
-  }
-
-  if (range === "month") {
-    return `all of ${formatMonthLabel(calendarMonth)}`;
-  }
-
-  const selectedWeekDate = bulkFillWeekDate || getTodayDate();
-  const { start, end } = getWeekDateRange(selectedWeekDate);
-  return `the week of ${formatDateRangeLabel(start, end)}`;
 }
 
 function getMonthsForDateRange(start: string, end: string) {
