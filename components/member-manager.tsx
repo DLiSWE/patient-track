@@ -1188,9 +1188,14 @@ export function MemberManager({
 
   useEffect(() => {
     if (session && hasMfaFactor && !isMfaChallengeRequired && !isMfaChecking) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      loadDashboard();
-      void loadAppProfile();
+      void (async () => {
+        // A brand-new user's app_profiles row is created here. RLS on
+        // members/claims/service_entries now requires that row to exist, so
+        // it must land before loadDashboard's reads fire -- otherwise a
+        // first-ever login can race the row and see an empty dashboard.
+        await loadAppProfile();
+        loadDashboard();
+      })();
     }
     // The dashboard should load once per auth session. Month/member changes are local form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3205,7 +3210,7 @@ export function MemberManager({
                   className={cn(
                     "shrink-0 border",
                     hasMfaFactor
-                      ? "border-emerald-300/30 bg-emerald-300/15 text-emerald-900 dark:text-emerald-100"
+                      ? "border-emerald-300/30 bg-emerald-300/15 text-emerald-200"
                       : "border-sidebar-border bg-transparent text-sidebar-foreground/70"
                   )}
                   variant="outline"

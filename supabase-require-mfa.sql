@@ -36,3 +36,15 @@ create policy "Require MFA for security events"
   to authenticated
   using ((select auth.jwt() ->> 'aal') = 'aal2')
   with check ((select auth.jwt() ->> 'aal') = 'aal2');
+
+-- Added alongside supabase-role-based-access.sql: audit_events previously had
+-- no aal2 gate at all, so any authenticated-but-not-yet-MFA-verified session
+-- could still write audit rows.
+drop policy if exists "Require MFA for audit events" on public.audit_events;
+create policy "Require MFA for audit events"
+  on public.audit_events
+  as restrictive
+  for all
+  to authenticated
+  using ((select auth.jwt() ->> 'aal') = 'aal2')
+  with check ((select auth.jwt() ->> 'aal') = 'aal2');
