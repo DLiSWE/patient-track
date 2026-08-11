@@ -173,6 +173,10 @@ export function ClaimsDashboard({
   const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
   const [form, setForm] = useState<ClaimFormValues>(createEmptyClaimForm());
   const [deleteTarget, setDeleteTarget] = useState<Claim | null>(null);
+  const [deleteMemberTarget, setDeleteMemberTarget] = useState<{
+    memberId: string;
+    memberName: string;
+  } | null>(null);
   const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
   const [claimWeekDate, setClaimWeekDate] = useState(getTodayDate());
 
@@ -731,6 +735,42 @@ export function ClaimsDashboard({
         },
       });
       toast.success("Claim deleted.");
+    }
+
+    setIsSaving(false);
+    setBusyMessage(null);
+  }
+
+  async function confirmDeleteMemberClaims() {
+    if (!supabase || !deleteMemberTarget) {
+      return;
+    }
+
+    const { memberId, memberName } = deleteMemberTarget;
+
+    setIsSaving(true);
+    setBusyMessage(`Deleting all claims for ${memberName}...`);
+
+    const { error } = await supabase.from("claims").delete().eq("member_id", memberId);
+
+    if (error) {
+      toast.error(error.message);
+    } else {
+      updateClaims((currentClaims) =>
+        currentClaims.filter((claim) => claim.memberId !== memberId)
+      );
+      setDeleteMemberTarget(null);
+      await onMonthDataRefresh?.(month);
+      await onAudit?.({
+        action: "member_claims_deleted",
+        entityType: "claim",
+        entityId: memberId,
+        summary: `Deleted all claims for ${memberName}.`,
+        metadata: {
+          member: memberName,
+        },
+      });
+      toast.success(`Deleted all claims for ${memberName}.`);
     }
 
     setIsSaving(false);
@@ -1479,7 +1519,7 @@ export function ClaimsDashboard({
                             : "—"}
                         </TableCell>
                         <TableCell>
-                          <div className="flex justify-end">
+                          <div className="flex justify-end gap-2">
                             <Button
                               type="button"
                               variant="outline"
@@ -1491,6 +1531,20 @@ export function ClaimsDashboard({
                                 data-icon="inline-start"
                               />
                               {isExpanded ? "Hide dates" : "View dates"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              onClick={() =>
+                                setDeleteMemberTarget({
+                                  memberId: group.memberId,
+                                  memberName: group.member?.displayName ?? "this member",
+                                })
+                              }
+                            >
+                              <Trash2Icon data-icon="inline-start" />
+                              Delete all
                             </Button>
                           </div>
                         </TableCell>
@@ -1724,7 +1778,6 @@ export function ClaimsDashboard({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep claim</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={confirmDeleteClaim}
@@ -1732,6 +1785,37 @@ export function ClaimsDashboard({
             >
               Delete
             </AlertDialogAction>
+            <AlertDialogCancel>Keep claim</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(deleteMemberTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteMemberTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all claims for this member?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes every claim on file for{" "}
+              {deleteMemberTarget?.memberName ?? "this member"} across their entire
+              history — not just {formatMonthLabel(month)}. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmDeleteMemberClaims}
+              disabled={isSaving}
+            >
+              Delete all
+            </AlertDialogAction>
+            <AlertDialogCancel>Keep claims</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

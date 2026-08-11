@@ -1,3 +1,6 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import {
   AlertTriangleIcon,
   BarChart3Icon,
@@ -10,6 +13,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 
+import { getServiceStatusStyle, serviceStatusStyles } from "@/components/service-calendar";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -29,7 +33,17 @@ import {
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 
+const attendanceLegendItems: Array<{ key: string; label: string }> = [
+  { key: "attended", label: "Attended" },
+  { key: "medical", label: "Medical" },
+  { key: "hold", label: "Hold" },
+  { key: "vacation", label: "Vacation" },
+  { key: "missing", label: "Missing" },
+];
+
 export function SummaryCard({
+  attendanceGridMembers,
+  attendanceGridStatusByMember,
   attendeePage,
   attendeePageCount,
   attendeeSearchQuery,
@@ -49,6 +63,8 @@ export function SummaryCard({
   visibleEntries,
   visibleExpectedMembers,
 }: {
+  attendanceGridMembers: Member[];
+  attendanceGridStatusByMember: Map<string, Map<string, string>>;
   attendeePage: number;
   attendeePageCount: number;
   attendeeSearchQuery: string;
@@ -76,6 +92,24 @@ export function SummaryCard({
   visibleExpectedMembers: Member[];
 }) {
   const selectedExpectedCount = expectedMembersByDate.get(selectedDate)?.length ?? 0;
+  const [gridQuery, setGridQuery] = useState("");
+
+  const attendanceGridDays = useMemo(
+    () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
+    [calendarDays]
+  );
+
+  const filteredAttendanceGridMembers = useMemo(() => {
+    const normalizedQuery = gridQuery.trim().toLowerCase();
+
+    if (!normalizedQuery) {
+      return attendanceGridMembers;
+    }
+
+    return attendanceGridMembers.filter((member) =>
+      member.displayName.toLowerCase().includes(normalizedQuery)
+    );
+  }, [attendanceGridMembers, gridQuery]);
 
   return (
     <Card className="dark:bg-card/95 dark:ring-white/10">
@@ -121,6 +155,111 @@ export function SummaryCard({
             detail="Failed claim attempts"
             tone="rose"
           />
+        </div>
+
+        <div className="mb-5 flex flex-col gap-3 rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-medium">Attendance grid</h3>
+              <p className="text-xs text-muted-foreground">
+                Every active member&apos;s daily status this month, at a glance.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                type="month"
+                value={month}
+                onChange={(event) => onMonthChange(event.target.value)}
+              />
+              <Input
+                className="h-9 sm:w-56"
+                placeholder="Search members"
+                value={gridQuery}
+                onChange={(event) => setGridQuery(event.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+            {attendanceLegendItems.map((item) => (
+              <span key={item.key} className="flex items-center gap-1.5">
+                <span
+                  className={cn("size-2.5 rounded-full", serviceStatusStyles[item.key]?.dot)}
+                />
+                {item.label}
+              </span>
+            ))}
+            <span className="flex items-center gap-1.5">
+              <span className="size-2.5 rounded-sm bg-muted dark:bg-white/10" />
+              Not expected
+            </span>
+          </div>
+
+          {attendanceGridDays.length === 0 || filteredAttendanceGridMembers.length === 0 ? (
+            <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+              {attendanceGridMembers.length === 0
+                ? "No active members"
+                : "No matching members"}
+            </div>
+          ) : (
+            <div className="max-h-[32rem] overflow-auto rounded-lg border dark:border-white/10">
+              <table className="w-full border-separate border-spacing-0 text-xs">
+                <thead>
+                  <tr>
+                    <th className="sticky left-0 top-0 z-20 min-w-40 border-b bg-background px-2 py-1.5 text-left font-medium dark:border-white/10">
+                      Member
+                    </th>
+                    {attendanceGridDays.map((day) => (
+                      <th
+                        key={day.date}
+                        className="sticky top-0 z-10 min-w-7 border-b bg-background px-0.5 py-1.5 text-center font-medium text-muted-foreground dark:border-white/10"
+                      >
+                        {day.dayNumber}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredAttendanceGridMembers.map((member) => {
+                    const memberStatuses = attendanceGridStatusByMember.get(member.id);
+
+                    return (
+                      <tr key={member.id}>
+                        <td className="sticky left-0 z-10 truncate border-b bg-background px-2 py-1 font-medium dark:border-white/10">
+                          {member.displayName}
+                        </td>
+                        {attendanceGridDays.map((day) => {
+                          const status = memberStatuses?.get(day.date);
+
+                          return (
+                            <td
+                              key={day.date}
+                              className="border-b px-0.5 py-1 dark:border-white/10"
+                              title={
+                                status
+                                  ? `${member.displayName} — ${day.date}: ${status}`
+                                  : undefined
+                              }
+                            >
+                              <span
+                                className={cn(
+                                  "mx-auto block size-4 rounded-sm",
+                                  status
+                                    ? getServiceStatusStyle(status).dot
+                                    : "bg-muted dark:bg-white/10"
+                                )}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">

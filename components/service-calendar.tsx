@@ -31,6 +31,11 @@ export const serviceStatusStyles: Record<
     dot: "bg-blue-500",
     hoverRing: "hover:outline hover:outline-2 hover:outline-blue-400",
   },
+  missing: {
+    cell: "ring-2 ring-inset ring-amber-500 bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100",
+    dot: "bg-amber-500",
+    hoverRing: "hover:outline hover:outline-2 hover:outline-amber-400",
+  },
 };
 
 export function getServiceStatusStyle(status: string) {
@@ -198,7 +203,9 @@ export function ServiceCalendar({
           const isNew = isSelected && !isRecorded;
           const isSaved = isSelected && isRecorded;
           const isPending = Boolean(pendingStatusDates?.has(day.date));
-          const isUnavailable = Boolean(unavailableDates?.has(day.date));
+          const dayOfWeek = new Date(`${day.date}T00:00:00`).getDay();
+          const isWeekendClosed = dayOfWeek === 0 || dayOfWeek === 6;
+          const isUnavailable = isWeekendClosed || Boolean(unavailableDates?.has(day.date));
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const claimStatus = claimStatusByDate?.get(day.date) ?? null;
@@ -216,6 +223,8 @@ export function ServiceCalendar({
               title={
                 isPending
                   ? `Staged as ${recordedStatus} — click to change, or Save to apply`
+                  : isWeekendClosed
+                    ? "Closed on weekends"
                   : isUnavailable
                     ? "Unavailable after discontinued date"
                   : isNew

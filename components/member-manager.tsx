@@ -302,6 +302,7 @@ export function MemberManager({
     () => new Set()
   );
   const [isBulkServiceDeleteOpen, setIsBulkServiceDeleteOpen] = useState(false);
+  const [isCleanseWeekendsOpen, setIsCleanseWeekendsOpen] = useState(false);
   const [isMonthResetOpen, setIsMonthResetOpen] = useState(false);
   const [monthResetConfirmation, setMonthResetConfirmation] = useState("");
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
@@ -857,6 +858,53 @@ export function MemberManager({
     [selectedSummaryDate, summaryExpectedMembersByDate]
   );
   const isSelectedSummaryDateFuture = selectedSummaryDate > getTodayDate();
+  const attendanceGridMembers = useMemo(
+    () =>
+      [...activeMembers].sort((left, right) =>
+        left.displayName.localeCompare(right.displayName)
+      ),
+    [activeMembers]
+  );
+  const attendanceGridStatusByMember = useMemo(() => {
+    const today = getTodayDate();
+    const statusByMember = new Map<string, Map<string, string>>();
+
+    for (const entry of summaryEntriesForMonth) {
+      const memberStatuses =
+        statusByMember.get(entry.memberId) ?? new Map<string, string>();
+      memberStatuses.set(entry.serviceDate, entry.serviceLabel);
+      statusByMember.set(entry.memberId, memberStatuses);
+    }
+
+    for (const member of attendanceGridMembers) {
+      const memberStatuses = statusByMember.get(member.id) ?? new Map<string, string>();
+      const missingDates = getExpectedServiceDatesForMonth(
+        summaryMonth,
+        member.serviceDays,
+        new Set(memberStatuses.keys())
+      ).filter(
+        (date) => date <= today && isMemberActiveOnDate(member, date)
+      );
+
+      for (const date of missingDates) {
+        memberStatuses.set(date, "Missing");
+      }
+
+      if (memberStatuses.size > 0) {
+        statusByMember.set(member.id, memberStatuses);
+      }
+    }
+
+    return statusByMember;
+  }, [attendanceGridMembers, summaryEntriesForMonth, summaryMonth]);
+  const weekendServiceEntries = useMemo(
+    () =>
+      serviceEntries.filter((entry) => {
+        const weekday = new Date(`${entry.serviceDate}T00:00:00`).getDay();
+        return weekday === 0 || weekday === 6;
+      }),
+    [serviceEntries]
+  );
   const normalizedSummaryMemberQuery = summaryMemberQuery.trim().toLowerCase();
   const filteredSelectedSummaryEntries = useMemo(() => {
     if (!normalizedSummaryMemberQuery) {
@@ -2728,6 +2776,51 @@ export function MemberManager({
     setIsSaving(false);
   }
 
+  async function confirmCleanseWeekendEntries() {
+    if (!supabase || weekendServiceEntries.length === 0) {
+      setIsCleanseWeekendsOpen(false);
+      return;
+    }
+
+    const idsToDelete = new Set(weekendServiceEntries.map((entry) => entry.id));
+    setIsSaving(true);
+    setBusyMessage(
+      `Removing ${idsToDelete.size} weekend service ${idsToDelete.size === 1 ? "date" : "dates"}...`
+    );
+
+    const { error } = await supabase
+      .from("service_entries")
+      .delete()
+      .in("id", Array.from(idsToDelete));
+
+    if (error) {
+      showError(error.message);
+    } else {
+      setServiceEntries((currentEntries) =>
+        currentEntries.filter((entry) => !idsToDelete.has(entry.id))
+      );
+      setIsCleanseWeekendsOpen(false);
+      await recordAuditEvent({
+        action: "weekend_services_cleansed",
+        entityType: "service",
+        summary: `Removed ${idsToDelete.size} stray weekend service ${idsToDelete.size === 1 ? "date" : "dates"}.`,
+        metadata: {
+          admin: true,
+          count: idsToDelete.size,
+          dates: weekendServiceEntries.map((entry) => entry.serviceDate),
+          members: weekendServiceEntries.map(
+            (entry) => memberById.get(entry.memberId)?.displayName ?? "Unknown member"
+          ),
+        },
+      });
+      showInfo(
+        `Removed ${idsToDelete.size} weekend service ${idsToDelete.size === 1 ? "date" : "dates"}.`
+      );
+    }
+
+    setIsSaving(false);
+  }
+
   async function confirmResetMonthData() {
     if (!supabase || monthResetConfirmation.trim().toUpperCase() !== "RESET") {
       return;
@@ -3419,6 +3512,8 @@ export function MemberManager({
 
             {activeView === "summary" ? (
               <SummaryCard
+                attendanceGridMembers={attendanceGridMembers}
+                attendanceGridStatusByMember={attendanceGridStatusByMember}
                 attendeePage={safeSummaryAttendeesPage}
                 attendeePageCount={summaryAttendeesPageCount}
                 attendeeSearchQuery={summaryMemberQuery}
@@ -3899,6 +3994,16 @@ export function MemberManager({
                       Latest service entries from the shared log.
                     </CardDescription>
                     <CardAction className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isSaving || weekendServiceEntries.length === 0}
+                        onClick={() => setIsCleanseWeekendsOpen(true)}
+                      >
+                        <Trash2Icon data-icon="inline-start" />
+                        Cleanse weekends ({weekendServiceEntries.length})
+                      </Button>
                       <Button
                         type="button"
                         variant="destructive"
@@ -4638,6 +4743,55 @@ export function MemberManager({
             >
               Delete selected
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={isCleanseWeekendsOpen}
+        onOpenChange={setIsCleanseWeekendsOpen}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove stray weekend services?</AlertDialogTitle>
+            <AlertDialogDescription>
+              We&apos;re no longer open Saturdays or Sundays. This removes every service
+              entry that falls on a weekend, across all members and months — {" "}
+              {weekendServiceEntries.length} total. Their claims, if any, are left in
+              place; delete those separately if needed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-48 overflow-y-auto rounded-lg border bg-muted/30 p-3 text-sm">
+            {weekendServiceEntries.slice(0, 8).map((entry) => (
+              <div key={entry.id} className="flex items-center justify-between gap-3 py-1">
+                <span className="truncate">
+                  {memberById.get(entry.memberId)?.displayName ?? "Unknown member"}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {new Date(`${entry.serviceDate}T00:00:00`).toLocaleDateString(undefined, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </span>
+              </div>
+            ))}
+            {weekendServiceEntries.length > 8 ? (
+              <p className="pt-2 text-xs text-muted-foreground">
+                + {weekendServiceEntries.length - 8} more
+              </p>
+            ) : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmCleanseWeekendEntries}
+              disabled={isSaving || weekendServiceEntries.length === 0}
+            >
+              Remove weekend entries
+            </AlertDialogAction>
+            <AlertDialogCancel>Keep them</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
