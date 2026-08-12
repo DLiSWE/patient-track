@@ -190,47 +190,57 @@ export function getExpectedMembersByDate(
   return expectedMembersByDate;
 }
 
+// Not open Saturdays or Sundays anymore, regardless of what a member's
+// serviceDays text says -- strip both out of every parsed result so nothing
+// downstream (expected dates, bulk fill, review flags, attendance grid) ever
+// treats a weekend as an expected service day.
+const closedWeekdays = new Set([0, 6]);
+
 function parseServiceWeekdays(serviceDays: string) {
   const compact = serviceDays.toLowerCase().replace(/[^a-z]/g, "");
   const normalized = serviceDays.toLowerCase();
-  const weekdays = new Set<number>();
+  let weekdays = new Set<number>();
 
   if (
     normalized.includes("daily") ||
     normalized.includes("every day") ||
     compact === "sumtwthfsa"
   ) {
-    return new Set([0, 1, 2, 3, 4, 5, 6]);
-  }
+    weekdays = new Set([0, 1, 2, 3, 4, 5, 6]);
+  } else {
+    const compactWeekdays = parseCompactWeekdays(compact);
 
-  const compactWeekdays = parseCompactWeekdays(compact);
+    if (compactWeekdays.size > 0) {
+      weekdays = compactWeekdays;
+    } else {
+      const tokens = normalized
+        .replace(/\//g, " ")
+        .replace(/,/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
 
-  if (compactWeekdays.size > 0) {
-    return compactWeekdays;
-  }
-
-  const tokens = normalized
-    .replace(/\//g, " ")
-    .replace(/,/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-
-  for (const token of tokens) {
-    if (token.startsWith("sun")) {
-      weekdays.add(0);
-    } else if (token.startsWith("mon")) {
-      weekdays.add(1);
-    } else if (token.startsWith("tue")) {
-      weekdays.add(2);
-    } else if (token.startsWith("wed")) {
-      weekdays.add(3);
-    } else if (token.startsWith("thu")) {
-      weekdays.add(4);
-    } else if (token.startsWith("fri")) {
-      weekdays.add(5);
-    } else if (token.startsWith("sat")) {
-      weekdays.add(6);
+      for (const token of tokens) {
+        if (token.startsWith("sun")) {
+          weekdays.add(0);
+        } else if (token.startsWith("mon")) {
+          weekdays.add(1);
+        } else if (token.startsWith("tue")) {
+          weekdays.add(2);
+        } else if (token.startsWith("wed")) {
+          weekdays.add(3);
+        } else if (token.startsWith("thu")) {
+          weekdays.add(4);
+        } else if (token.startsWith("fri")) {
+          weekdays.add(5);
+        } else if (token.startsWith("sat")) {
+          weekdays.add(6);
+        }
+      }
     }
+  }
+
+  for (const closedWeekday of closedWeekdays) {
+    weekdays.delete(closedWeekday);
   }
 
   return weekdays;
