@@ -65,15 +65,15 @@ function buildSpotifySearchUrl(title: string, artist: string) {
 
 function parseTracksFromEmbedHtml(html: string): TopSong[] {
   const itemPattern =
-    /<a[^>]+href="(?<href>\/track\/[^"]+|https:\/\/open\.spotify\.com\/track\/[^"]+)"[^>]*>[\s\S]*?<h3[^>]*>(?<title>.*?)<\/h3>[\s\S]*?<h4[^>]*>(?<artist>.*?)<\/h4>[\s\S]*?<\/a>/gi;
+    /<a[^>]+href="(\/track\/[^"]+|https:\/\/open\.spotify\.com\/track\/[^"]+)"[^>]*>[\s\S]*?<h3[^>]*>(.*?)<\/h3>[\s\S]*?<h4[^>]*>(.*?)<\/h4>[\s\S]*?<\/a>/gi;
   const songs: TopSong[] = [];
   const seen = new Set<string>();
   let match: RegExpExecArray | null;
 
   while ((match = itemPattern.exec(html)) !== null) {
-    const title = stripTags(match.groups?.title ?? "");
-    const artist = stripTags(match.groups?.artist ?? "");
-    const href = decodeHtml(match.groups?.href ?? "");
+    const href = decodeHtml(match[1] ?? "");
+    const title = stripTags(match[2] ?? "");
+    const artist = stripTags(match[3] ?? "");
 
     if (!title || !artist) {
       continue;
