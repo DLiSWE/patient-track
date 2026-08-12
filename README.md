@@ -27,6 +27,12 @@ npm run build
 npm run start
 ```
 
+The app now has:
+
+- `/` for the post-login internal homepage
+- `/workspace` for the full member-management workspace
+- `/login` for direct sign-in
+
 ## Environment
 
 This app expects browser-safe Supabase environment variables:
