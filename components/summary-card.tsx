@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangleIcon,
   BarChart3Icon,
@@ -9,12 +9,18 @@ import {
   ChevronRightIcon,
   ClipboardListIcon,
   ClockIcon,
+  LayoutGridIcon,
   SearchIcon,
   UsersIcon,
 } from "lucide-react";
 
-import { getServiceStatusStyle, serviceStatusStyles } from "@/components/service-calendar";
+import {
+  attendanceLegendItems,
+  getServiceStatusStyle,
+  serviceStatusStyles,
+} from "@/components/service-calendar";
 import { Button } from "@/components/ui/button";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
   Card,
   CardAction,
@@ -23,6 +29,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { Member } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
@@ -33,13 +48,38 @@ import {
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 
-const attendanceLegendItems: Array<{ key: string; label: string }> = [
-  { key: "attended", label: "Attended" },
-  { key: "medical", label: "Medical" },
-  { key: "hold", label: "Hold" },
-  { key: "vacation", label: "Vacation" },
-  { key: "missing", label: "Missing" },
+type SummaryWidgetKey = "claimStatus" | "attendanceGrid" | "calendar";
+
+const summaryWidgetStorageKey = "sophia-summary-widgets";
+
+const summaryWidgetOptions: Array<{
+  key: SummaryWidgetKey;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "claimStatus",
+    label: "Claim status",
+    description: "Required, pending, accepted, and needs-review counts.",
+  },
+  {
+    key: "attendanceGrid",
+    label: "Attendance grid",
+    description: "Every active member's daily status this month, at a glance.",
+  },
+  {
+    key: "calendar",
+    label: "Monthly calendar",
+    description:
+      "Day-by-day counts, summary stats, weekday volume, and the selected-date list.",
+  },
 ];
+
+const defaultSummaryWidgetVisibility: Record<SummaryWidgetKey, boolean> = {
+  claimStatus: true,
+  attendanceGrid: true,
+  calendar: true,
+};
 
 export function SummaryCard({
   attendanceGridMembers,
@@ -93,6 +133,33 @@ export function SummaryCard({
 }) {
   const selectedExpectedCount = expectedMembersByDate.get(selectedDate)?.length ?? 0;
   const [gridQuery, setGridQuery] = useState("");
+  const [isCustomizeOpen, setIsCustomizeOpen] = useState(false);
+  const [widgetVisibility, setWidgetVisibility] = useState<Record<SummaryWidgetKey, boolean>>(
+    defaultSummaryWidgetVisibility
+  );
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(summaryWidgetStorageKey);
+      if (raw) {
+        setWidgetVisibility((current) => ({ ...current, ...JSON.parse(raw) }));
+      }
+    } catch {
+      // Ignore malformed or inaccessible storage (private browsing, etc.).
+    }
+  }, []);
+
+  function toggleWidget(key: SummaryWidgetKey) {
+    setWidgetVisibility((current) => {
+      const next = { ...current, [key]: !current[key] };
+      try {
+        window.localStorage.setItem(summaryWidgetStorageKey, JSON.stringify(next));
+      } catch {
+        // Ignore storage write failures -- the toggle still works for this session.
+      }
+      return next;
+    });
+  }
 
   const attendanceGridDays = useMemo(
     () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
@@ -116,16 +183,37 @@ export function SummaryCard({
       <CardHeader>
         <CardTitle>Summary</CardTitle>
         <CardDescription>Daily attendance counts and monthly service stats.</CardDescription>
-        <CardAction>
+        <CardAction className="flex items-center gap-2">
           <Input
             className="summary-month-input w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
             type="month"
             value={month}
             onChange={(event) => onMonthChange(event.target.value)}
           />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setIsCustomizeOpen(true)}
+          >
+            <LayoutGridIcon data-icon="inline-start" />
+            Customize
+          </Button>
         </CardAction>
       </CardHeader>
       <CardContent>
+        {!widgetVisibility.claimStatus &&
+        !widgetVisibility.attendanceGrid &&
+        !widgetVisibility.calendar ? (
+          <div className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
+            <h3 className="font-medium">No widgets selected</h3>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              Use Customize above to add widgets back to this page.
+            </p>
+          </div>
+        ) : null}
+
+        {widgetVisibility.claimStatus ? (
         <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ClaimWidget
             icon={ClipboardListIcon}
@@ -156,7 +244,9 @@ export function SummaryCard({
             tone="rose"
           />
         </div>
+        ) : null}
 
+        {widgetVisibility.attendanceGrid ? (
         <div className="mb-5 flex flex-col gap-3 rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -203,7 +293,7 @@ export function SummaryCard({
                 : "No matching members"}
             </div>
           ) : (
-            <div className="max-h-[32rem] overflow-auto rounded-lg border dark:border-white/10">
+            <ScrollArea className="h-[32rem] rounded-lg border dark:border-white/10">
               <table className="w-full border-separate border-spacing-0 text-xs">
                 <thead>
                   <tr>
@@ -258,10 +348,13 @@ export function SummaryCard({
                   })}
                 </tbody>
               </table>
-            </div>
+              <ScrollBar orientation="horizontal" />
+            </ScrollArea>
           )}
         </div>
+        ) : null}
 
+        {widgetVisibility.calendar ? (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-7 gap-1.5">
@@ -470,7 +563,43 @@ export function SummaryCard({
             </div>
           </div>
         </div>
+        ) : null}
       </CardContent>
+
+      <Dialog open={isCustomizeOpen} onOpenChange={setIsCustomizeOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Customize this page</DialogTitle>
+            <DialogDescription>
+              Choose which widgets show on the Summary tab. Saved on this device only.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            {summaryWidgetOptions.map((option) => (
+              <label
+                key={option.key}
+                className="flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm dark:border-white/10"
+              >
+                <input
+                  checked={widgetVisibility[option.key]}
+                  className="mt-0.5 size-4 shrink-0 rounded border-input accent-primary"
+                  type="checkbox"
+                  onChange={() => toggleWidget(option.key)}
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium text-foreground">{option.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" />}>Done</DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

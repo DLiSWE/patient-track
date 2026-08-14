@@ -22,9 +22,29 @@ export function getMonthInputValue(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// <input type="month"> should only ever emit a valid "YYYY-MM" string, but
+// some browsers (notably Firefox, when decrementing the month spinner past
+// January) can emit an out-of-range value like "2026-00". Anything built
+// from that goes straight into Supabase date-range filters, so falling back
+// to the current month here keeps a malformed value from ever reaching
+// Postgres as an invalid date literal.
+export function normalizeMonthString(month: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+
+  if (match) {
+    const monthNumber = Number(match[2]);
+    if (monthNumber >= 1 && monthNumber <= 12) {
+      return month;
+    }
+  }
+
+  return getMonthInputValue();
+}
+
 export function getDefaultDateForMonth(month: string) {
+  const normalizedMonth = normalizeMonthString(month);
   const today = new Date().toLocaleDateString("en-CA");
-  return today.startsWith(`${month}-`) ? today : `${month}-01`;
+  return today.startsWith(`${normalizedMonth}-`) ? today : `${normalizedMonth}-01`;
 }
 
 export function isDateInCurrentMonth(date: string) {
@@ -38,7 +58,7 @@ export function isDateInCurrentMonth(date: string) {
 }
 
 export function getCalendarDays(month: string): Array<CalendarDay | null> {
-  const [year, monthNumber] = month.split("-").map(Number);
+  const [year, monthNumber] = normalizeMonthString(month).split("-").map(Number);
   const monthIndex = monthNumber - 1;
   const firstDay = new Date(year, monthIndex, 1);
   const totalDays = new Date(year, monthIndex + 1, 0).getDate();
@@ -111,7 +131,7 @@ export function getExpectedServiceDatesForMonth(
 }
 
 export function getMonthDateRange(month: string) {
-  const [year, monthNumber] = month.split("-").map(Number);
+  const [year, monthNumber] = normalizeMonthString(month).split("-").map(Number);
   const monthIndex = monthNumber - 1;
   const totalDays = new Date(year, monthIndex + 1, 0).getDate();
 

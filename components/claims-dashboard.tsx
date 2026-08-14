@@ -3,7 +3,6 @@
 import { Fragment, FormEvent, type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
-  AlertCircleIcon,
   BotIcon,
   CalendarClockIcon,
   CalendarDaysIcon,
@@ -16,8 +15,8 @@ import {
   PencilIcon,
   PlayCircleIcon,
   PlusIcon,
-  RotateCcwIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 
 import {
@@ -51,7 +50,6 @@ import {
 } from "@/lib/service-store";
 import { supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -113,16 +111,12 @@ type MemberClaimGroup = {
 };
 
 type ProviderClaimBatch = {
-  accepted: number;
-  claimed: number;
   claims: Claim[];
   created: number;
-  failed: number;
-  pending: number;
   provider: string;
   readyToGenerate: ServiceEntry[];
   required: number;
-  submitted: number;
+  validated: number;
   total: number;
 };
 
@@ -165,6 +159,7 @@ export function ClaimsDashboard({
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("All");
   const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
   const [page, setPage] = useState(0);
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(
     () => new Set()
@@ -177,7 +172,6 @@ export function ClaimsDashboard({
     memberId: string;
     memberName: string;
   } | null>(null);
-  const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
   const [claimWeekDate, setClaimWeekDate] = useState(getTodayDate());
 
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
@@ -195,6 +189,10 @@ export function ClaimsDashboard({
         return false;
       }
 
+      if (dateFilter && claim.serviceDate !== dateFilter) {
+        return false;
+      }
+
       if (!normalizedQuery) {
         return true;
       }
@@ -202,7 +200,7 @@ export function ClaimsDashboard({
       const memberName = memberById.get(claim.memberId)?.displayName ?? "";
       return memberName.toLowerCase().includes(normalizedQuery);
     });
-  }, [canonicalClaims, memberById, query, statusFilter]);
+  }, [canonicalClaims, dateFilter, memberById, query, statusFilter]);
 
   const stats = useMemo(() => {
     const counts: Record<string, number> = { Total: canonicalClaims.length };
@@ -216,14 +214,6 @@ export function ClaimsDashboard({
     }
 
     return counts;
-  }, [canonicalClaims]);
-
-  const lastFailedClaim = useMemo(() => {
-    return canonicalClaims
-      .filter((claim) => claim.status.toLowerCase() === "failed")
-      .sort((left, right) =>
-        (right.lastAttemptedAt ?? "").localeCompare(left.lastAttemptedAt ?? "")
-      )[0];
   }, [canonicalClaims]);
 
   const claimKeySet = useMemo(
@@ -404,18 +394,6 @@ export function ClaimsDashboard({
           type: "Future claim",
         });
       }
-
-      if (claim.status.toLowerCase() === "failed") {
-        addReviewItem({
-          id: `failed-claim:${claim.id}`,
-          memberName,
-          provider,
-          serviceDate: claim.serviceDate,
-          severity: "high",
-          summary: claim.lastFailureReason || "Claim is marked failed.",
-          type: "Failed claim",
-        });
-      }
     }
 
     return Array.from(reviewItems.values()).sort((left, right) => {
@@ -452,16 +430,12 @@ export function ClaimsDashboard({
       }
 
       const nextBatch: ProviderClaimBatch = {
-        accepted: 0,
-        claimed: 0,
         claims: [],
         created: 0,
-        failed: 0,
-        pending: 0,
         provider: normalizedProvider,
         readyToGenerate: [],
         required: 0,
-        submitted: 0,
+        validated: 0,
         total: 0,
       };
       batchesByProvider.set(normalizedProvider, nextBatch);
@@ -476,20 +450,12 @@ export function ClaimsDashboard({
       batch.claims.push(claim);
       batch.total += 1;
 
-      if (status === "accepted") {
-        batch.accepted += 1;
-      } else if (status === "claimed") {
-        batch.claimed += 1;
-      } else if (status === "created") {
+      if (status === "created") {
         batch.created += 1;
-      } else if (status === "failed") {
-        batch.failed += 1;
-      } else if (status === "pending") {
-        batch.pending += 1;
       } else if (status === "required") {
         batch.required += 1;
-      } else if (status === "submitted") {
-        batch.submitted += 1;
+      } else if (status === "validated") {
+        batch.validated += 1;
       }
     }
 
@@ -506,15 +472,11 @@ export function ClaimsDashboard({
 
   const botSummary = useMemo(() => {
     const created = stats.Created ?? 0;
-    const accepted = stats.Accepted ?? 0;
-    const completed = created + accepted;
-    const failed = stats.Failed ?? 0;
+    const completed = created;
     const required = stats.Required ?? 0;
-    const claimed = stats.Claimed ?? 0;
-    const pending = stats.Pending ?? 0;
-    const submitted = stats.Submitted ?? 0;
-    const runnable = required + failed;
-    const inProgress = claimed + pending + submitted;
+    const validated = stats.Validated ?? 0;
+    const runnable = required;
+    const inProgress = validated;
     const total = canonicalClaims.length;
     const lastActivity = canonicalClaims
       .map((claim) => claim.lastAttemptedAt ?? claim.submittedAt ?? claim.updatedAt)
@@ -525,7 +487,6 @@ export function ClaimsDashboard({
     return {
       completed,
       completionRate: total ? Math.round((completed / total) * 100) : 0,
-      failed,
       inProgress,
       lastActivity,
       readyToGenerate: readyToGenerateEntries.length,
@@ -591,7 +552,7 @@ export function ClaimsDashboard({
 
   function openAddDialog() {
     setEditingClaimId(null);
-    setForm(createEmptyClaimForm(members[0]?.id ?? "", `${month}-01`));
+    setForm(createEmptyClaimForm(members[0]?.id ?? "", dateFilter || `${month}-01`));
     setIsFormOpen(true);
   }
 
@@ -925,81 +886,6 @@ export function ClaimsDashboard({
     setBusyMessage(null);
   }
 
-  async function handleResetFailedClaims() {
-    if (!supabase) {
-      return;
-    }
-
-    const failedClaims = canonicalClaims.filter(
-      (claim) => claim.status.toLowerCase() === "failed"
-    );
-
-    if (failedClaims.length === 0) {
-      toast.success("No failed claims to reset.");
-      setIsResetFailedOpen(false);
-      return;
-    }
-
-    const failedIds = failedClaims.map((claim) => claim.id);
-    const monthRange = getMonthDateRange(month);
-
-    setIsSaving(true);
-    setBusyMessage(
-      `Resetting ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} to required...`
-    );
-
-    const { error } = await supabase
-      .from("claims")
-      .update({
-        status: "Required",
-        last_failure_reason: null,
-        last_attempted_at: null,
-        submitted_at: null,
-        updated_at: new Date().toISOString(),
-      })
-      .in("id", failedIds);
-
-    if (error) {
-      toast.error(error.message);
-      setIsSaving(false);
-      setBusyMessage(null);
-      return;
-    }
-
-    const refreshedClaimsResult = await fetchClaimsInRange(
-      supabase,
-      monthRange.start,
-      monthRange.end
-    );
-
-    if (refreshedClaimsResult.error) {
-      toast.error(refreshedClaimsResult.error.message);
-      setIsSaving(false);
-      setBusyMessage(null);
-      return;
-    }
-
-    updateClaims(() => getCanonicalClaims(refreshedClaimsResult.data));
-    await onMonthDataRefresh?.(month);
-    await onAudit?.({
-      action: "claims_failed_reset",
-      entityType: "claim",
-      summary: `Reset ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} back to required.`,
-      metadata: {
-        month,
-        count: failedClaims.length,
-        claimIds: failedIds,
-      },
-    });
-    toast.success(
-      `Reset ${failedClaims.length} failed claim${failedClaims.length === 1 ? "" : "s"} to required.`
-    );
-
-    setIsResetFailedOpen(false);
-    setIsSaving(false);
-    setBusyMessage(null);
-  }
-
   function exportClaimStatusReport() {
     const rows = canonicalClaims.map((claim) => {
       const member = memberById.get(claim.memberId);
@@ -1137,37 +1023,19 @@ export function ClaimsDashboard({
           <CardAction className="flex flex-wrap items-center justify-end gap-2">
             <Badge
               className={cn(
-                botSummary.failed > 0
-                  ? getClaimStatusStyle("Failed").badge
-                  : botSummary.runnable > 0
-                    ? getClaimStatusStyle("Required").badge
-                    : getClaimStatusStyle("Created").badge
+                botSummary.runnable > 0
+                  ? getClaimStatusStyle("Required").badge
+                  : getClaimStatusStyle("Created").badge
               )}
             >
-              {botSummary.failed > 0
-                ? "Retry needed"
-                : botSummary.runnable > 0
-                  ? "Ready to run"
-                  : "Caught up"}
+              {botSummary.runnable > 0 ? "Ready to run" : "Caught up"}
             </Badge>
-            {botSummary.failed > 0 ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={isSaving}
-                onClick={() => setIsResetFailedOpen(true)}
-              >
-                <RotateCcwIcon data-icon="inline-start" />
-                Reset failed to required
-              </Button>
-            ) : null}
           </CardAction>
         </CardHeader>
         <CardContent className="grid gap-4">
           <div className="grid gap-3 md:grid-cols-4">
             <BotMetric
-              detail={`${botSummary.required} required, ${botSummary.failed} failed`}
+              detail={`${botSummary.required} required`}
               icon={<PlayCircleIcon className="size-4" />}
               label="Runnable by bot"
               tone={botSummary.runnable > 0 ? "action" : "neutral"}
@@ -1176,15 +1044,15 @@ export function ClaimsDashboard({
             <BotMetric
               detail={`${botSummary.completionRate}% of this month`}
               icon={<CheckCircle2Icon className="size-4" />}
-              label="Created or accepted"
+              label="Created"
               tone="success"
               value={botSummary.completed}
             />
             <BotMetric
-              detail={`${botSummary.inProgress} pending/submitted`}
+              detail={`${botSummary.inProgress} confirmed by the Validate step`}
               icon={<CalendarClockIcon className="size-4" />}
-              label="In progress"
-              tone="neutral"
+              label="Validated"
+              tone="success"
               value={botSummary.inProgress}
             />
             <BotMetric
@@ -1202,7 +1070,7 @@ export function ClaimsDashboard({
                 <div>
                   <p className="text-sm font-semibold">Provider run queue</p>
                   <p className="text-xs text-muted-foreground">
-                    Required and failed claims are what the bot can pick up.
+                    Required claims are what the bot can pick up.
                   </p>
                 </div>
                 <Badge variant="secondary">{botSummary.total} total</Badge>
@@ -1232,18 +1100,12 @@ export function ClaimsDashboard({
                   ? new Date(botSummary.lastActivity).toLocaleString()
                   : "No claim attempt or update has been recorded for this month."}
               </p>
-              {lastFailedClaim ? (
-                <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
-                  Latest failed claim: {memberById.get(lastFailedClaim.memberId)?.displayName ?? "Unknown member"} on{" "}
-                  {new Date(`${lastFailedClaim.serviceDate}T00:00:00`).toLocaleDateString()}
-                </div>
-              ) : null}
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total" value={stats.Total ?? 0} />
         {claimStatusOptions.map((status) => (
           <StatCard
@@ -1366,28 +1228,19 @@ export function ClaimsDashboard({
                     </div>
                     <Badge
                       className={cn(
-                        batch.failed > 0
-                          ? getClaimStatusStyle("Failed").badge
-                          : batch.readyToGenerate.length > 0
-                            ? getClaimStatusStyle("Required").badge
-                            : getClaimStatusStyle("Accepted").badge
+                        batch.readyToGenerate.length > 0
+                          ? getClaimStatusStyle("Required").badge
+                          : getClaimStatusStyle("Created").badge
                       )}
                     >
-                      {batch.failed > 0
-                        ? `${batch.failed} failed`
-                        : batch.readyToGenerate.length > 0
-                          ? "Action needed"
-                          : "Clear"}
+                      {batch.readyToGenerate.length > 0 ? "Action needed" : "Clear"}
                     </Badge>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-7">
                     <BatchMetric label="Ready" value={batch.readyToGenerate.length} />
                     <BatchMetric label="Required" value={batch.required} />
-                    <BatchMetric label="Claimed" value={batch.claimed} />
-                    <BatchMetric label="Pending" value={batch.pending} />
-                    <BatchMetric label="Submitted" value={batch.submitted} />
-                    <BatchMetric label="Accepted" value={batch.accepted} />
-                    <BatchMetric label="Failed" value={batch.failed} />
+                    <BatchMetric label="Created" value={batch.created} />
+                    <BatchMetric label="Validated" value={batch.validated} />
                   </div>
                 </div>
               ))}
@@ -1395,21 +1248,6 @@ export function ClaimsDashboard({
           )}
         </CardContent>
       </Card>
-
-      {lastFailedClaim ? (
-        <Alert variant="destructive">
-          <AlertCircleIcon data-icon="inline-start" />
-          <AlertTitle>Last failure</AlertTitle>
-          <AlertDescription>
-            {memberById.get(lastFailedClaim.memberId)?.displayName ?? "Unknown member"} —{" "}
-            {new Date(`${lastFailedClaim.serviceDate}T00:00:00`).toLocaleDateString()}
-            {lastFailedClaim.lastFailureReason ? `: ${lastFailedClaim.lastFailureReason}` : ""}
-            {lastFailedClaim.lastAttemptedAt
-              ? ` (${new Date(lastFailedClaim.lastAttemptedAt).toLocaleString()})`
-              : ""}
-          </AlertDescription>
-        </Alert>
-      ) : null}
 
       <Card>
         <CardHeader>
@@ -1423,7 +1261,7 @@ export function ClaimsDashboard({
           </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <Input
               aria-label="Search claims by member"
               className="sm:w-64"
@@ -1434,6 +1272,32 @@ export function ClaimsDashboard({
                 setPage(0);
               }}
             />
+            <div className="flex items-center gap-1.5">
+              <Input
+                aria-label="Filter claims by service date"
+                className="sm:w-44"
+                type="date"
+                value={dateFilter}
+                onChange={(event) => {
+                  setDateFilter(event.target.value);
+                  setPage(0);
+                }}
+              />
+              {dateFilter ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Clear date filter"
+                  onClick={() => {
+                    setDateFilter("");
+                    setPage(0);
+                  }}
+                >
+                  <XIcon />
+                </Button>
+              ) : null}
+            </div>
             <Select
               value={statusFilter}
               onValueChange={(value) => {
@@ -1461,7 +1325,9 @@ export function ClaimsDashboard({
             <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
               <h3 className="font-medium">No claims found</h3>
               <p className="max-w-sm text-sm text-muted-foreground">
-                Adjust the filters or add a claim from the button above.
+                {dateFilter && !dateFilter.startsWith(`${month}-`)
+                  ? `${new Date(`${dateFilter}T00:00:00`).toLocaleDateString()} is outside ${formatMonthLabel(month)}, the currently loaded month. Change the month above, or adjust the filters.`
+                  : "Adjust the filters or add a claim from the button above."}
               </p>
             </div>
           ) : (
@@ -1820,36 +1686,6 @@ export function ClaimsDashboard({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog
-        open={isResetFailedOpen}
-        onOpenChange={(open) => {
-          if (!open) {
-            setIsResetFailedOpen(false);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Reset failed claims?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This sets every failed claim in {formatMonthLabel(month)} back to{" "}
-              &quot;Required&quot; so the bot can retry them, and clears each one&apos;s
-              failure reason and last attempt. This affects{" "}
-              {stats.Failed ?? 0} claim{(stats.Failed ?? 0) === 1 ? "" : "s"} across all
-              members.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleResetFailedClaims}
-              disabled={isSaving || (stats.Failed ?? 0) === 0}
-            >
-              Reset {stats.Failed ?? 0} to required
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
@@ -1907,8 +1743,8 @@ function BotMetric({
 }
 
 function ProviderBotRow({ batch }: { batch: ProviderClaimBatch }) {
-  const runnable = batch.required + batch.failed;
-  const completed = batch.accepted + batch.created;
+  const runnable = batch.required;
+  const completed = batch.created;
 
   return (
     <div className="grid gap-2 rounded-md border bg-card/70 p-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
@@ -1920,9 +1756,6 @@ function ProviderBotRow({ batch }: { batch: ProviderClaimBatch }) {
       </div>
       <div className="flex flex-wrap gap-1.5 sm:justify-end">
         <Badge className={getClaimStatusStyle("Required").badge}>{runnable} runnable</Badge>
-        {batch.failed > 0 ? (
-          <Badge className={getClaimStatusStyle("Failed").badge}>{batch.failed} failed</Badge>
-        ) : null}
       </div>
     </div>
   );

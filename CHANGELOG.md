@@ -8,6 +8,7 @@ All notable changes to the Sophia Members web app should be recorded here.
 - Added a homepage grid showing five currently popular K-pop songs as a playful internal touch.
 - Switched the homepage K-pop grid from a static snapshot to a live Spotify Korea fetch with a women-groups filter and fallback songs.
 - Made homepage K-pop song cards open their Spotify source in a new tab, with search-link fallback behavior.
+- Added a members-tab status snapshot section that groups current-month Hold, Medical, and Vacation members.
 
 ## [2.1.0] - 2026-08-09
 

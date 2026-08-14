@@ -13,6 +13,7 @@ import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
+  AlertTriangleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   BarChart3Icon,
@@ -25,7 +26,9 @@ import {
   ClipboardListIcon,
   EyeIcon,
   HistoryIcon,
+  HomeIcon,
   KeyRoundIcon,
+  LayoutGridIcon,
   Loader2Icon,
   LogOutIcon,
   MenuIcon,
@@ -152,6 +155,7 @@ import {
   getMonthInputValue,
   getSummaryStats,
   isDateInCurrentMonth,
+  normalizeMonthString,
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 
@@ -193,6 +197,56 @@ const securityEventLookbackMs = 24 * 60 * 60 * 1000;
 const memberActivityPageSize = 10;
 const directoryPageSize = 10;
 const servicePageSizeOptions = [10, 25, 50, 100];
+const statusCardPageSizeOptions = [5, 10, 25, 50];
+
+type HomeWidgetKey =
+  | "statusCards"
+  | "directory"
+  | "addMemberForm"
+  | "memberActivity"
+  | "discontinued";
+
+const homeWidgetStorageKey = "sophia-home-widgets";
+
+const homeWidgetOptions: Array<{
+  key: HomeWidgetKey;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "statusCards",
+    label: "On hold / Medical / Vacation",
+    description: "Members whose last tracked service was one of these statuses.",
+  },
+  {
+    key: "directory",
+    label: "Directory",
+    description: "The full searchable member list.",
+  },
+  {
+    key: "addMemberForm",
+    label: "Add member",
+    description: "The form for adding or editing a member.",
+  },
+  {
+    key: "memberActivity",
+    label: "New & updated members",
+    description: "Members added or updated this month.",
+  },
+  {
+    key: "discontinued",
+    label: "Discontinued members",
+    description: "Members no longer active.",
+  },
+];
+
+const defaultHomeWidgetVisibility: Record<HomeWidgetKey, boolean> = {
+  statusCards: true,
+  directory: true,
+  addMemberForm: true,
+  memberActivity: true,
+  discontinued: true,
+};
 const summaryAttendeesPageSize = 10;
 const adminEventPageSize = 10;
 const mfaFriendlyName = "Sophia Members";
@@ -254,11 +308,43 @@ export function MemberManager({
   const [directoryPage, setDirectoryPage] = useState(0);
   const [newMembersPage, setNewMembersPage] = useState(0);
   const [updatedMembersPage, setUpdatedMembersPage] = useState(0);
+  const [holdMembersPage, setHoldMembersPage] = useState(0);
+  const [medicalMembersPage, setMedicalMembersPage] = useState(0);
+  const [vacationMembersPage, setVacationMembersPage] = useState(0);
+  const [statusCardPageSize, setStatusCardPageSize] = useState(5);
+  const [isHomeCustomizeOpen, setIsHomeCustomizeOpen] = useState(false);
+  const [homeWidgetVisibility, setHomeWidgetVisibility] = useState<
+    Record<HomeWidgetKey, boolean>
+  >(defaultHomeWidgetVisibility);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(homeWidgetStorageKey);
+      if (raw) {
+        setHomeWidgetVisibility((current) => ({ ...current, ...JSON.parse(raw) }));
+      }
+    } catch {
+      // Ignore malformed or inaccessible storage (private browsing, etc.).
+    }
+  }, []);
+
+  function toggleHomeWidget(key: HomeWidgetKey) {
+    setHomeWidgetVisibility((current) => {
+      const next = { ...current, [key]: !current[key] };
+      try {
+        window.localStorage.setItem(homeWidgetStorageKey, JSON.stringify(next));
+      } catch {
+        // Ignore storage write failures -- the toggle still works for this session.
+      }
+      return next;
+    });
+  }
   const [servicePage, setServicePage] = useState(0);
   const [servicePageSize, setServicePageSize] = useState(10);
   const [serviceMemberQuery, setServiceMemberQuery] = useState("");
   const [isServiceMemberPickerOpen, setIsServiceMemberPickerOpen] = useState(false);
   const [dateOverrides, setDateOverrides] = useState<Record<string, DateOverride>>({});
+  const [forceDeleteClaimsOnSave, setForceDeleteClaimsOnSave] = useState(false);
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>(
     getStoredFailedSignInState
@@ -484,6 +570,55 @@ export function MemberManager({
     [activeMembers]
   );
 
+  const lastServiceEntryByMember = useMemo(() => {
+    const latestByMember = new Map<string, ServiceEntry>();
+
+    for (const entry of serviceEntries) {
+      const current = latestByMember.get(entry.memberId);
+
+      if (
+        !current ||
+        entry.serviceDate > current.serviceDate ||
+        (entry.serviceDate === current.serviceDate &&
+          getServiceEntryUpdatedAt(entry) > getServiceEntryUpdatedAt(current))
+      ) {
+        latestByMember.set(entry.memberId, entry);
+      }
+    }
+
+    return latestByMember;
+  }, [serviceEntries]);
+
+  const membersByLastServiceStatus = useMemo(() => {
+    const byStatus = new Map<string, Member[]>();
+
+    for (const member of activeMembers) {
+      const status = lastServiceEntryByMember.get(member.id)?.serviceLabel.toLowerCase();
+
+      if (!status || status === "attended") {
+        continue;
+      }
+
+      const group = byStatus.get(status) ?? [];
+      group.push(member);
+      byStatus.set(status, group);
+    }
+
+    for (const group of byStatus.values()) {
+      group.sort((left, right) =>
+        (lastServiceEntryByMember.get(right.id)?.serviceDate ?? "").localeCompare(
+          lastServiceEntryByMember.get(left.id)?.serviceDate ?? ""
+        )
+      );
+    }
+
+    return byStatus;
+  }, [activeMembers, lastServiceEntryByMember]);
+
+  const membersOnHold = membersByLastServiceStatus.get("hold") ?? [];
+  const membersOnMedical = membersByLastServiceStatus.get("medical") ?? [];
+  const membersOnVacation = membersByLastServiceStatus.get("vacation") ?? [];
+
   const memberById = useMemo(
     () => new Map(members.map((member) => [member.id, member])),
     [members]
@@ -537,33 +672,39 @@ export function MemberManager({
       serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${calendarMonth}-`)),
     [calendarMonth, serviceEntries]
   );
-  const savedServiceEntriesForCalendarMonth = useMemo(
-    () =>
-      serviceEntriesForCalendarMonth.filter(
-        (entry) => entry.serviceLabel.toLowerCase() === "attended"
-      ),
-    [serviceEntriesForCalendarMonth]
-  );
-  const savedServiceEntryKeysForCalendarMonth = useMemo(
+  const savedServiceEntriesForResetRange = useMemo(() => {
+    if (!bulkFillStartDate || !bulkFillEndDate || bulkFillEndDate < bulkFillStartDate) {
+      return [];
+    }
+
+    return serviceEntries.filter(
+      (entry) =>
+        entry.serviceLabel.toLowerCase() === "attended" &&
+        entry.serviceDate >= bulkFillStartDate &&
+        entry.serviceDate <= bulkFillEndDate
+    );
+  }, [bulkFillEndDate, bulkFillStartDate, serviceEntries]);
+  const savedServiceEntryKeysForResetRange = useMemo(
     () =>
       new Set(
-        savedServiceEntriesForCalendarMonth.map(
+        savedServiceEntriesForResetRange.map(
           (entry) => `${entry.memberId}:${entry.serviceDate}`
         )
       ),
-    [savedServiceEntriesForCalendarMonth]
+    [savedServiceEntriesForResetRange]
   );
-  const claimsForCalendarMonth = useMemo(
-    () => claims.filter((claim) => claim.serviceDate.startsWith(`${calendarMonth}-`)),
-    [calendarMonth, claims]
-  );
-  const savedClaimsForCalendarMonth = useMemo(
-    () =>
-      claimsForCalendarMonth.filter((claim) =>
-        savedServiceEntryKeysForCalendarMonth.has(`${claim.memberId}:${claim.serviceDate}`)
-      ),
-    [claimsForCalendarMonth, savedServiceEntryKeysForCalendarMonth]
-  );
+  const savedClaimsForResetRange = useMemo(() => {
+    if (!bulkFillStartDate || !bulkFillEndDate || bulkFillEndDate < bulkFillStartDate) {
+      return [];
+    }
+
+    return claims.filter(
+      (claim) =>
+        claim.serviceDate >= bulkFillStartDate &&
+        claim.serviceDate <= bulkFillEndDate &&
+        savedServiceEntryKeysForResetRange.has(`${claim.memberId}:${claim.serviceDate}`)
+    );
+  }, [bulkFillEndDate, bulkFillStartDate, claims, savedServiceEntryKeysForResetRange]);
   const claimsForClaimsMonth = useMemo(
     () => claims.filter((claim) => claim.serviceDate.startsWith(`${claimsMonth}-`)),
     [claims, claimsMonth]
@@ -1692,7 +1833,8 @@ export function MemberManager({
         calendarMonth,
         datesToCreate,
         entriesToDelete,
-        statusChangesToApply
+        statusChangesToApply,
+        forceDeleteClaimsOnSave
       );
 
       if (claimSyncResult.error) {
@@ -1732,6 +1874,7 @@ export function MemberManager({
           statusChanged: statusChangesToApply.length,
           claimsCreated: claimSyncResult.created,
           claimsRemoved: claimSyncResult.removed,
+          forceDeletedClaims: forceDeleteClaimsOnSave,
           addedDates: datesToCreate.map((item) => item.serviceDate),
           removedDates: entriesToDelete.map((entry) => entry.serviceDate),
           statusChanges: statusChangesToApply.map(({ entry, status }) => ({
@@ -1741,7 +1884,12 @@ export function MemberManager({
           })),
         },
       });
-      showInfo("Service dates saved.");
+      setForceDeleteClaimsOnSave(false);
+      showInfo(
+        forceDeleteClaimsOnSave
+          ? `Service dates saved. Removed ${claimSyncResult.removed} claim${claimSyncResult.removed === 1 ? "" : "s"} regardless of status.`
+          : "Service dates saved."
+      );
     }
 
     setIsSaving(false);
@@ -2065,13 +2213,16 @@ export function MemberManager({
     setIsServiceMemberPickerOpen(false);
     setDateOverrides({});
     setStatusOverrides({});
+    setForceDeleteClaimsOnSave(false);
     void refreshServiceCalendarMonth(memberId, calendarMonth);
   }
 
-  function handleCalendarMonthChange(month: string) {
+  function handleCalendarMonthChange(rawMonth: string) {
+    const month = normalizeMonthString(rawMonth);
     setCalendarMonth(month);
     setDateOverrides({});
     setStatusOverrides({});
+    setForceDeleteClaimsOnSave(false);
     setServicePage(0);
     void refreshMonthData(month);
     if (serviceForm.memberId) {
@@ -2079,19 +2230,22 @@ export function MemberManager({
     }
   }
 
-  function handleSummaryMonthChange(month: string) {
+  function handleSummaryMonthChange(rawMonth: string) {
+    const month = normalizeMonthString(rawMonth);
     setSummaryMonth(month);
     setSelectedSummaryDate(getDefaultDateForMonth(month));
     setSummaryAttendeesPage(0);
     void refreshMonthData(month);
   }
 
-  function handleClaimsMonthChange(month: string) {
+  function handleClaimsMonthChange(rawMonth: string) {
+    const month = normalizeMonthString(rawMonth);
     setClaimsMonth(month);
     void refreshMonthData(month);
   }
 
-  function handleMemberDetailMonthChange(month: string) {
+  function handleMemberDetailMonthChange(rawMonth: string) {
+    const month = normalizeMonthString(rawMonth);
     setMemberDetailMonth(month);
     void refreshMonthData(month);
   }
@@ -2234,6 +2388,7 @@ export function MemberManager({
       }
       return nextOverrides;
     });
+    setForceDeleteClaimsOnSave(false);
     showInfo("Reverted to the saved state for this month.");
   }
 
@@ -2821,26 +2976,35 @@ export function MemberManager({
     setIsSaving(false);
   }
 
-  async function confirmResetMonthData() {
+  async function confirmResetDateRange() {
     if (!supabase || monthResetConfirmation.trim().toUpperCase() !== "RESET") {
       return;
     }
 
-    const monthRange = getMonthDateRange(calendarMonth);
-    const serviceIdsToDelete = savedServiceEntriesForCalendarMonth.map((entry) => entry.id);
-    const claimIdsToDelete = savedClaimsForCalendarMonth.map((claim) => claim.id);
+    if (!bulkFillStartDate || !bulkFillEndDate || bulkFillEndDate < bulkFillStartDate) {
+      showError("Pick a valid start and end date first.");
+      return;
+    }
+
+    const supabaseClient = supabase;
+    const start = bulkFillStartDate;
+    const end = bulkFillEndDate;
+    const affectedMonths = getMonthsForDateRange(start, end);
+    const rangeLabel = formatDateRangeLabel(start, end);
+    const serviceIdsToDelete = savedServiceEntriesForResetRange.map((entry) => entry.id);
+    const claimIdsToDelete = savedClaimsForResetRange.map((claim) => claim.id);
     const serviceCount = serviceIdsToDelete.length;
     const claimCount = claimIdsToDelete.length;
 
     if (serviceCount === 0 && claimCount === 0) {
-      showInfo(`No saved entries to reset for ${formatMonthLabel(calendarMonth)}.`);
+      showInfo(`No saved entries to reset for ${rangeLabel}.`);
       setIsMonthResetOpen(false);
       setMonthResetConfirmation("");
       return;
     }
 
     setIsSaving(true);
-    setBusyMessage(`Resetting ${formatMonthLabel(calendarMonth)} saved services and claims...`);
+    setBusyMessage(`Resetting ${rangeLabel} saved services and claims...`);
 
     const claimsResult =
       claimIdsToDelete.length > 0
@@ -2864,40 +3028,71 @@ export function MemberManager({
       return;
     }
 
-    const [remainingServicesResult, remainingClaimsResult] = await Promise.all([
-      fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
-      fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
-    ]);
+    const refreshedMonthResults = await Promise.all(
+      affectedMonths.map((month) => {
+        const affectedMonthRange = getMonthDateRange(month);
+        return Promise.all([
+          fetchServiceEntriesInRange(
+            supabaseClient,
+            affectedMonthRange.start,
+            affectedMonthRange.end
+          ),
+          fetchClaimsInRange(supabaseClient, affectedMonthRange.start, affectedMonthRange.end),
+        ]);
+      })
+    );
 
-    if (remainingServicesResult.error || remainingClaimsResult.error) {
-      showError(
-        remainingServicesResult.error?.message ||
-          remainingClaimsResult.error?.message ||
-          "Could not verify the month reset."
-      );
-      setIsSaving(false);
-      return;
+    for (const [servicesForMonth, claimsForMonth] of refreshedMonthResults) {
+      if (servicesForMonth.error || claimsForMonth.error) {
+        showError(
+          servicesForMonth.error?.message ||
+            claimsForMonth.error?.message ||
+            "Could not verify the reset."
+        );
+        setIsSaving(false);
+        return;
+      }
     }
 
     const serviceIdsToDeleteSet = new Set(serviceIdsToDelete);
     const claimIdsToDeleteSet = new Set(claimIdsToDelete);
-    const remainingTargetedServices = remainingServicesResult.data.filter((entry) =>
-      serviceIdsToDeleteSet.has(entry.id)
-    );
-    const remainingTargetedClaims = remainingClaimsResult.data.filter((claim) =>
-      claimIdsToDeleteSet.has(claim.id)
-    );
+    const remainingTargetedServices = refreshedMonthResults
+      .flatMap(([servicesForMonth]) => servicesForMonth.data)
+      .filter((entry) => serviceIdsToDeleteSet.has(entry.id));
+    const remainingTargetedClaims = refreshedMonthResults
+      .flatMap(([, claimsForMonth]) => claimsForMonth.data)
+      .filter((claim) => claimIdsToDeleteSet.has(claim.id));
 
-    setServiceEntries((currentEntries) =>
-      replaceServiceEntriesForMonth(currentEntries, calendarMonth, remainingServicesResult.data)
-    );
-    setClaims((currentClaims) =>
-      replaceClaimsForMonth(currentClaims, calendarMonth, remainingClaimsResult.data)
-    );
+    setServiceEntries((currentEntries) => {
+      let nextEntries = currentEntries;
+
+      affectedMonths.forEach((month, index) => {
+        nextEntries = replaceServiceEntriesForMonth(
+          nextEntries,
+          month,
+          refreshedMonthResults[index][0].data
+        );
+      });
+
+      return nextEntries;
+    });
+    setClaims((currentClaims) => {
+      let nextClaims = currentClaims;
+
+      affectedMonths.forEach((month, index) => {
+        nextClaims = replaceClaimsForMonth(
+          nextClaims,
+          month,
+          refreshedMonthResults[index][1].data
+        );
+      });
+
+      return nextClaims;
+    });
 
     if (remainingTargetedServices.length > 0 || remainingTargetedClaims.length > 0) {
       showError(
-        `Reset did not fully clear saved entries for ${formatMonthLabel(calendarMonth)}. ${
+        `Reset did not fully clear saved entries for ${rangeLabel}. ${
           remainingTargetedServices.length
         } service ${remainingTargetedServices.length === 1 ? "entry remains" : "entries remain"} and ${
           remainingTargetedClaims.length
@@ -2907,7 +3102,15 @@ export function MemberManager({
       return;
     }
 
-    setLoadedDataMonths((currentMonths) => new Set(currentMonths).add(calendarMonth));
+    setLoadedDataMonths((currentMonths) => {
+      const nextMonths = new Set(currentMonths);
+
+      for (const affectedMonth of affectedMonths) {
+        nextMonths.add(affectedMonth);
+      }
+
+      return nextMonths;
+    });
     setDateOverrides((currentOverrides) =>
       clearCalendarOverridesForMemberMonth(
         currentOverrides,
@@ -2926,18 +3129,20 @@ export function MemberManager({
     setIsMonthResetOpen(false);
     setMonthResetConfirmation("");
     await recordAuditEvent({
-      action: "month_reset",
+      action: "date_range_reset",
       entityType: "service",
-      summary: `Reset saved services and claims for ${formatMonthLabel(calendarMonth)}.`,
+      summary: `Reset saved services and claims for ${rangeLabel}.`,
       metadata: {
         admin: true,
-        month: calendarMonth,
+        start,
+        end,
+        months: affectedMonths,
         claimsDeleted: claimCount,
         servicesDeleted: serviceCount,
       },
     });
     showInfo(
-      `Reset ${formatMonthLabel(calendarMonth)}: deleted ${serviceCount} saved service ${
+      `Reset ${rangeLabel}: deleted ${serviceCount} saved service ${
         serviceCount === 1 ? "entry" : "entries"
       } and ${claimCount} claim${claimCount === 1 ? "" : "s"}. Holds, medicals, and vacations were kept.`
     );
@@ -3358,6 +3563,18 @@ export function MemberManager({
               <Button
                 type="button"
                 variant="ghost"
+                className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                onClick={() => {
+                  setIsMobileNavOpen(false);
+                  router.push("/");
+                }}
+              >
+                <HomeIcon data-icon="inline-start" />
+                Home
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
                 className={cn(
                   "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   activeView === "members" &&
@@ -3504,6 +3721,20 @@ export function MemberManager({
                                 : `${activeMembers.length} total`}
                 </p>
               </div>
+              {activeView !== "members" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setActiveView("members");
+                    router.push("/");
+                  }}
+                >
+                  <HomeIcon data-icon="inline-start" />
+                  Home
+                </Button>
+              ) : null}
             </header>
 
             {activeBusyMessage ? (
@@ -3634,14 +3865,14 @@ export function MemberManager({
                       <Button
                         type="button"
                         variant="destructive"
-                        disabled={isSaving}
+                        disabled={isSaving || !bulkFillStartDate || !bulkFillEndDate}
                         onClick={() => {
                           setMonthResetConfirmation("");
                           setIsMonthResetOpen(true);
                         }}
                       >
                         <Trash2Icon data-icon="inline-start" />
-                        Reset month
+                        Reset selected range
                       </Button>
                     </div>
                   </CardContent>
@@ -3891,6 +4122,36 @@ export function MemberManager({
                           )}
                         </div>
                       </div>
+
+                      <label
+                        className={cn(
+                          "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition-colors lg:col-span-2",
+                          forceDeleteClaimsOnSave
+                            ? "border-amber-500/40 bg-amber-50 dark:border-amber-400/30 dark:bg-amber-400/10"
+                            : "border-border bg-background/60 dark:bg-white/[0.03]"
+                        )}
+                      >
+                        <input
+                          checked={forceDeleteClaimsOnSave}
+                          className="mt-0.5 size-4 shrink-0 rounded border-input accent-amber-500"
+                          type="checkbox"
+                          onChange={(event) =>
+                            setForceDeleteClaimsOnSave(event.target.checked)
+                          }
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="flex items-center gap-1.5 font-medium text-foreground">
+                            <AlertTriangleIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                            Also delete claims already submitted or accepted
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            By default, only Required or Pending claims are removed when a
+                            date moves off Attended. Checking this also deletes claims for
+                            those dates even if they already went to the payer — use only
+                            to correct a real mistake.
+                          </span>
+                        </span>
+                      </label>
 
                       <div className="flex gap-2 lg:col-span-2">
                         <Button
@@ -4176,6 +4437,101 @@ export function MemberManager({
               </div>
             ) : (
               <>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsHomeCustomizeOpen(true)}
+                  >
+                    <LayoutGridIcon data-icon="inline-start" />
+                    Customize
+                  </Button>
+                  {homeWidgetVisibility.statusCards ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Show</span>
+                      <Select
+                        value={String(statusCardPageSize)}
+                        onValueChange={(value) => {
+                          setStatusCardPageSize(Number(value ?? 5));
+                          setHoldMembersPage(0);
+                          setMedicalMembersPage(0);
+                          setVacationMembersPage(0);
+                        }}
+                      >
+                        <SelectTrigger className="w-20">
+                          <span>{statusCardPageSize}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {statusCardPageSizeOptions.map((option) => (
+                              <SelectItem key={option} value={String(option)}>
+                                {option}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <span className="text-xs text-muted-foreground">per page</span>
+                    </div>
+                  ) : null}
+                </div>
+
+                {!homeWidgetVisibility.statusCards &&
+                !homeWidgetVisibility.directory &&
+                !homeWidgetVisibility.addMemberForm &&
+                !homeWidgetVisibility.memberActivity &&
+                !homeWidgetVisibility.discontinued ? (
+                  <div className="mb-5 flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
+                    <h3 className="font-medium">No widgets selected</h3>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      Use Customize above to add widgets back to this page.
+                    </p>
+                  </div>
+                ) : null}
+
+                {homeWidgetVisibility.statusCards ? (
+                <div className="mb-5 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                  <NewMembersCard
+                    title="On hold"
+                    description={`${membersOnHold.length} last tracked as hold`}
+                    emptyMessage="No members on hold"
+                    getDate={(member) =>
+                      lastServiceEntryByMember.get(member.id)?.serviceDate ?? member.updatedAt
+                    }
+                    members={membersOnHold}
+                    page={holdMembersPage}
+                    pageSize={statusCardPageSize}
+                    onPageChange={setHoldMembersPage}
+                  />
+                  <NewMembersCard
+                    title="Medical"
+                    description={`${membersOnMedical.length} last tracked as medical`}
+                    emptyMessage="No members on medical"
+                    getDate={(member) =>
+                      lastServiceEntryByMember.get(member.id)?.serviceDate ?? member.updatedAt
+                    }
+                    members={membersOnMedical}
+                    page={medicalMembersPage}
+                    pageSize={statusCardPageSize}
+                    onPageChange={setMedicalMembersPage}
+                  />
+                  <NewMembersCard
+                    title="Vacation"
+                    description={`${membersOnVacation.length} last tracked as vacation`}
+                    emptyMessage="No members on vacation"
+                    getDate={(member) =>
+                      lastServiceEntryByMember.get(member.id)?.serviceDate ?? member.updatedAt
+                    }
+                    members={membersOnVacation}
+                    page={vacationMembersPage}
+                    pageSize={statusCardPageSize}
+                    onPageChange={setVacationMembersPage}
+                  />
+                </div>
+                ) : null}
+
+                {homeWidgetVisibility.directory ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Directory</CardTitle>
@@ -4407,7 +4763,18 @@ export function MemberManager({
                   ) : null}
                 </Card>
 
-                <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+                ) : null}
+
+                {homeWidgetVisibility.addMemberForm || homeWidgetVisibility.memberActivity ? (
+                <div
+                  className={cn(
+                    "grid gap-5",
+                    homeWidgetVisibility.addMemberForm && homeWidgetVisibility.memberActivity
+                      ? "xl:grid-cols-[360px_minmax(0,1fr)]"
+                      : "grid-cols-1"
+                  )}
+                >
+                {homeWidgetVisibility.addMemberForm ? (
                   <Card ref={memberFormCardRef}>
                     <CardHeader>
                       <CardTitle>{editingId ? "Update member" : "Add member"}</CardTitle>
@@ -4532,7 +4899,9 @@ export function MemberManager({
                       </form>
                     </CardContent>
                   </Card>
+                ) : null}
 
+                {homeWidgetVisibility.memberActivity ? (
                   <div className="grid gap-5 sm:grid-cols-2">
                     <NewMembersCard
                       title="Updated members"
@@ -4552,8 +4921,11 @@ export function MemberManager({
                       onPageChange={setNewMembersPage}
                     />
                   </div>
+                ) : null}
                 </div>
+                ) : null}
 
+                {homeWidgetVisibility.discontinued ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Discontinued members</CardTitle>
@@ -4604,6 +4976,47 @@ export function MemberManager({
                     </CardContent>
                   ) : null}
                 </Card>
+                ) : null}
+
+                <Dialog open={isHomeCustomizeOpen} onOpenChange={setIsHomeCustomizeOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Customize this page</DialogTitle>
+                      <DialogDescription>
+                        Choose which widgets show on the Members page. Saved on this
+                        device only.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex flex-col gap-3">
+                      {homeWidgetOptions.map((option) => (
+                        <label
+                          key={option.key}
+                          className="flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm dark:border-white/10"
+                        >
+                          <input
+                            checked={homeWidgetVisibility[option.key]}
+                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-primary"
+                            type="checkbox"
+                            onChange={() => toggleHomeWidget(option.key)}
+                          />
+                          <span className="flex flex-col gap-0.5">
+                            <span className="font-medium text-foreground">
+                              {option.label}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {option.description}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <DialogFooter>
+                      <Button type="button" onClick={() => setIsHomeCustomizeOpen(false)}>
+                        Done
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </>
             )}
           </div>
@@ -4807,21 +5220,24 @@ export function MemberManager({
       >
         <AlertDialogContent className="gap-5">
           <AlertDialogHeader>
-            <AlertDialogTitle>Reset this month?</AlertDialogTitle>
+            <AlertDialogTitle>Reset selected range?</AlertDialogTitle>
             <AlertDialogDescription>
               This deletes saved (Attended) service entries and their claims for{" "}
-              {formatMonthLabel(calendarMonth)}. Hold, Medical, and Vacation entries are left
-              in place, and members stay active.
+              {bulkFillStartDate && bulkFillEndDate
+                ? formatDateRangeLabel(bulkFillStartDate, bulkFillEndDate)
+                : "the selected range"}
+              . Hold, Medical, and Vacation entries are left in place, and members stay
+              active.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Saved services</span>
-              <span className="font-medium">{savedServiceEntriesForCalendarMonth.length}</span>
+              <span className="font-medium">{savedServiceEntriesForResetRange.length}</span>
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Claims</span>
-              <span className="font-medium">{savedClaimsForCalendarMonth.length}</span>
+              <span className="font-medium">{savedClaimsForResetRange.length}</span>
             </div>
             <Field label='Type "RESET" to confirm' htmlFor="month-reset-confirmation">
               <Input
@@ -4833,15 +5249,15 @@ export function MemberManager({
             </Field>
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep month</AlertDialogCancel>
+            <AlertDialogCancel>Keep range</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              onClick={confirmResetMonthData}
+              onClick={confirmResetDateRange}
               disabled={
                 isSaving || monthResetConfirmation.trim().toUpperCase() !== "RESET"
               }
             >
-              Reset month
+              Reset range
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -5199,7 +5615,8 @@ async function reconcileSafeClaimsForServiceChanges(
   month: string,
   datesToCreate: Array<{ serviceDate: string; status: string }>,
   entriesToDelete: ServiceEntry[],
-  statusChangesToApply: Array<{ entry: ServiceEntry; status: string }>
+  statusChangesToApply: Array<{ entry: ServiceEntry; status: string }>,
+  forceDeleteAnyStatus: boolean = false
 ) {
   const staleClaimDates = new Set<string>();
   const requiredClaimDates = new Set<string>();
@@ -5231,14 +5648,16 @@ async function reconcileSafeClaimsForServiceChanges(
 
   const staleDates = Array.from(staleClaimDates);
   const requiredDates = Array.from(requiredClaimDates);
+  const staleClaimsQuery = supabaseClient
+    .from("claims")
+    .delete()
+    .eq("member_id", memberId)
+    .in("service_date", staleDates);
   const deleteResult =
     staleDates.length > 0
-      ? await supabaseClient
-        .from("claims")
-        .delete()
-        .eq("member_id", memberId)
-        .in("service_date", staleDates)
-        .in("status", ["Required", "Pending"])
+      ? await (forceDeleteAnyStatus
+        ? staleClaimsQuery
+        : staleClaimsQuery.in("status", ["Required", "Pending"]))
       : { error: null };
 
   if (deleteResult.error) {

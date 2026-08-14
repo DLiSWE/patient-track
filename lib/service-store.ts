@@ -119,3 +119,23 @@ export function toServiceEntryInsert(values: ServiceEntryFormValues) {
     service_label: values.serviceLabel || defaultServiceStatus,
   };
 }
+
+export function getLatestServiceEntryByMember(entries: ServiceEntry[]) {
+  const latestByMember = new Map<string, ServiceEntry>();
+
+  for (const entry of entries) {
+    const current = latestByMember.get(entry.memberId);
+    const currentUpdatedAt = current ? current.updatedAt || current.createdAt : "";
+    const entryUpdatedAt = entry.updatedAt || entry.createdAt;
+
+    if (
+      !current ||
+      entry.serviceDate > current.serviceDate ||
+      (entry.serviceDate === current.serviceDate && entryUpdatedAt > currentUpdatedAt)
+    ) {
+      latestByMember.set(entry.memberId, entry);
+    }
+  }
+
+  return latestByMember;
+}

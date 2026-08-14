@@ -42,6 +42,14 @@ export function getServiceStatusStyle(status: string) {
   return serviceStatusStyles[status.toLowerCase()] ?? serviceStatusStyles.attended;
 }
 
+export const attendanceLegendItems: Array<{ key: string; label: string }> = [
+  { key: "attended", label: "Attended" },
+  { key: "medical", label: "Medical" },
+  { key: "hold", label: "Hold" },
+  { key: "vacation", label: "Vacation" },
+  { key: "missing", label: "Missing" },
+];
+
 const calendarLegend = [
   {
     className: "border-emerald-500 bg-emerald-100 dark:bg-emerald-950",

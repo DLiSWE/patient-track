@@ -11,6 +11,11 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 
+import {
+  attendanceLegendItems,
+  getServiceStatusStyle,
+  serviceStatusStyles,
+} from "@/components/service-calendar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,7 +40,11 @@ import {
   getClaimStatusStyle,
   type Claim,
 } from "@/lib/claim-store";
-import { getExpectedServiceDatesForMonth } from "@/lib/date-utils";
+import {
+  getCalendarDays,
+  getExpectedServiceDatesForMonth,
+  weekdayLabels,
+} from "@/lib/date-utils";
 import { getProviderLabel, type Member } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 import { cn } from "@/lib/utils";
@@ -90,13 +99,10 @@ export function MemberDetailCard({
     ? Math.round((servicesThisMonth.length / expectedThroughToday) * 100)
     : 0;
   const clearedClaims = claimsThisMonth.filter(
-    (claim) => claim.status.toLowerCase() === "accepted"
-  ).length;
-  const needsReviewClaims = claimsThisMonth.filter(
-    (claim) => claim.status.toLowerCase() === "failed"
+    (claim) => claim.status.toLowerCase() === "created"
   ).length;
   const openClaims = claimsThisMonth.filter((claim) =>
-    ["required", "pending", "submitted"].includes(claim.status.toLowerCase())
+    ["required", "validated"].includes(claim.status.toLowerCase())
   ).length;
   const claimCounts = claimStatusOptions.map((status) => ({
     ...status,
@@ -106,6 +112,15 @@ export function MemberDetailCard({
   }));
   const latestClaim = memberClaims[0];
   const lastService = memberServices[0];
+
+  const calendarDays = getCalendarDays(month);
+  const statusByDate = new Map<string, string>();
+  for (const entry of servicesThisMonth) {
+    statusByDate.set(entry.serviceDate, entry.serviceLabel);
+  }
+  for (const date of missedDatesThisMonth) {
+    statusByDate.set(date, "Missing");
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -194,7 +209,7 @@ export function MemberDetailCard({
           icon={TrendingUpIcon}
           label="Claim cleared"
           value={`${claimsThisMonth.length ? Math.round((clearedClaims / claimsThisMonth.length) * 100) : 0}%`}
-          detail={`${clearedClaims} accepted, ${openClaims} still open`}
+          detail={`${clearedClaims} created, ${openClaims} still open`}
           tone="emerald"
         />
       </div>
@@ -238,25 +253,56 @@ export function MemberDetailCard({
                 : "No attendance recorded yet"}
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            {servicesThisMonth.length === 0 ? (
-              <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground dark:border-white/10">
-                No attendance this month
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {servicesThisMonth.map((entry) => (
-                  <Badge
-                    key={entry.id}
-                    variant="outline"
-                    className="h-8 rounded-md px-2.5"
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+              {attendanceLegendItems.map((item) => (
+                <span key={item.key} className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "size-2.5 rounded-full",
+                      serviceStatusStyles[item.key]?.dot
+                    )}
+                  />
+                  {item.label}
+                </span>
+              ))}
+              <span className="flex items-center gap-1.5">
+                <span className="size-2.5 rounded-sm border border-border" />
+                Not expected
+              </span>
+            </div>
+            <div className="grid grid-cols-7 gap-1.5">
+              {weekdayLabels.map((weekday) => (
+                <div
+                  key={weekday}
+                  className="flex h-6 items-center justify-center text-[10px] font-medium text-muted-foreground"
+                >
+                  {weekday}
+                </div>
+              ))}
+              {calendarDays.map((day, index) => {
+                if (!day) {
+                  return <div key={`empty-${index}`} className="aspect-square" />;
+                }
+
+                const status = statusByDate.get(day.date);
+
+                return (
+                  <div
+                    key={day.date}
+                    title={status ? `${formatDate(day.date)}: ${status}` : formatDate(day.date)}
+                    className={cn(
+                      "flex aspect-square items-center justify-center rounded-md border text-xs font-medium",
+                      status
+                        ? getServiceStatusStyle(status).cell
+                        : "border-border/70 bg-background text-muted-foreground"
+                    )}
                   >
-                    {formatDate(entry.serviceDate)}
-                    <span className="text-muted-foreground">{entry.serviceLabel}</span>
-                  </Badge>
-                ))}
-              </div>
-            )}
+                    {day.dayNumber}
+                  </div>
+                );
+              })}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -298,8 +344,8 @@ export function MemberDetailCard({
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-3">
             <MiniStat label="Open" value={openClaims} />
-            <MiniStat label="Accepted" value={clearedClaims} />
-            <MiniStat label="Review" value={needsReviewClaims} />
+            <MiniStat label="Created" value={clearedClaims} />
+            <MiniStat label="Total" value={claimsThisMonth.length} />
           </CardContent>
         </Card>
       </div>
