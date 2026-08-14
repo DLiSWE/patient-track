@@ -6,7 +6,7 @@ This project is the Sophia Members web app.
 
 - Next.js 16 + React 19
 - Direct browser-to-Supabase client access
-- Current tracked version: `2.1.0`
+- Current tracked version: `2.2.0`
 - Main surface: member management, service calendar tracking, claims visibility, and admin/security workflows
 
 ## Important areas

@@ -43,6 +43,8 @@ import type { Member } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 import {
   type CalendarDay,
+  getDefaultDateForMonth,
+  normalizeMonthString,
   type SummaryStats,
   weekdayLabels,
 } from "@/lib/date-utils";
@@ -186,9 +188,11 @@ export function SummaryCard({
         <CardAction className="flex items-center gap-2">
           <Input
             className="summary-month-input w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-            type="month"
-            value={month}
-            onChange={(event) => onMonthChange(event.target.value)}
+            type="date"
+            value={getDefaultDateForMonth(month)}
+            onChange={(event) =>
+              onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
+            }
           />
           <Button
             type="button"
@@ -258,9 +262,11 @@ export function SummaryCard({
             <div className="flex flex-wrap items-center gap-2">
               <Input
                 className="w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                type="month"
-                value={month}
-                onChange={(event) => onMonthChange(event.target.value)}
+                type="date"
+                value={getDefaultDateForMonth(month)}
+                onChange={(event) =>
+                  onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
+                }
               />
               <Input
                 className="h-9 sm:w-56"

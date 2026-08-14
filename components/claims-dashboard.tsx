@@ -33,9 +33,11 @@ import {
 } from "@/lib/claim-store";
 import type { AuditEventInput } from "@/lib/audit-store";
 import {
+  getDefaultDateForMonth,
   getExpectedServiceDatesForMonth,
   getMonthDateRange,
   getWeekDateRange,
+  normalizeMonthString,
 } from "@/lib/date-utils";
 import {
   getProviderLabel,
@@ -964,9 +966,11 @@ export function ClaimsDashboard({
             <Input
               aria-label="Claims month"
               className="w-40"
-              type="month"
-              value={month}
-              onChange={(event) => onMonthChange(event.target.value)}
+              type="date"
+              value={getDefaultDateForMonth(month)}
+              onChange={(event) =>
+                onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
+              }
             />
           </CardAction>
         </CardHeader>

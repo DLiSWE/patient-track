@@ -4,7 +4,12 @@ import { Field } from "@/components/form-field";
 import { Button } from "@/components/ui/button";
 import { claimStatusOptions, getClaimStatusStyle } from "@/lib/claim-store";
 import { Input } from "@/components/ui/input";
-import { type CalendarDay, weekdayLabels } from "@/lib/date-utils";
+import {
+  type CalendarDay,
+  getDefaultDateForMonth,
+  normalizeMonthString,
+  weekdayLabels,
+} from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 
 export const serviceStatusStyles: Record<
@@ -127,9 +132,11 @@ export function ServiceCalendar({
           <Input
             id="service-month"
             className="service-month-input w-full max-w-full min-w-0"
-            type="month"
-            value={month}
-            onChange={(event) => onMonthChange(event.target.value)}
+            type="date"
+            value={getDefaultDateForMonth(month)}
+            onChange={(event) =>
+              onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
+            }
           />
         </Field>
 

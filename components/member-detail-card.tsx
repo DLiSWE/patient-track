@@ -42,7 +42,9 @@ import {
 } from "@/lib/claim-store";
 import {
   getCalendarDays,
+  getDefaultDateForMonth,
   getExpectedServiceDatesForMonth,
+  normalizeMonthString,
   weekdayLabels,
 } from "@/lib/date-utils";
 import { getProviderLabel, type Member } from "@/lib/member-store";
@@ -146,9 +148,11 @@ export function MemberDetailCard({
             <CardAction className="flex shrink-0 gap-2">
               <Input
                 className="w-40"
-                type="month"
-                value={month}
-                onChange={(event) => onMonthChange(event.target.value)}
+                type="date"
+                value={getDefaultDateForMonth(month)}
+                onChange={(event) =>
+                  onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
+                }
               />
               <Button type="button" variant="outline" size="sm" onClick={() => onEdit(member)}>
                 <PencilIcon data-icon="inline-start" />
