@@ -4,6 +4,28 @@ All notable changes to the Sophia Members web app should be recorded here.
 
 ## [Unreleased]
 
+- Added an Attendance grid to the Summary tab showing every active member's daily status for the month, with member search.
+- Added a Customize control to the Summary tab for showing/hiding its cards (claim status, attendance grid, calendar), saved per browser.
+- Added On hold / Medical / Vacation status cards to the Members tab, driven by each member's most recently recorded service, with a configurable page size.
+- Removed the older Member status snapshot card, superseded by the cards above.
+- Added a Customize control to the Members tab for showing/hiding its cards (status cards, Directory, Add member, New & updated members, Discontinued members), saved per browser.
+- Added a Home link to the top of the sidebar nav for jumping back to `/` from any tab.
+- Added a date filter to the Claims tab alongside the existing member search and status filter.
+- Added a "Delete all" action per member on the Claims tab to clear their full claim history (not just the loaded month), with a confirmation dialog.
+- Disabled Saturdays and Sundays in the interactive service calendar and excluded them from every expected-service-date calculation app-wide, since the business no longer operates those days.
+- Added a "Cleanse weekends" tool to bulk-remove stray weekend service entries already on file.
+- Added an opt-in checkbox on Service Calendar save to also delete claims for dates changed off Attended even if the claim already went to the payer; previously only Required/Pending claims were auto-removed.
+- Replaced "Reset month" with "Reset selected range" on the Service Calendar, reusing the Bulk Fill date range instead of always wiping the whole calendar month, with cross-month-safe refresh.
+- Replaced the flat attendance badge list on the member profile page with a color-coded month calendar, matching the status colors used elsewhere in the app.
+- Rebuilt the landing page (`/`) to pull live Supabase data (members, service entries, claims) with a shared month selector (prev/next and jump), instead of a static page.
+- Added selectable, reorderable widgets to the landing page: claim status counts, On hold/Medical/Vacation, a day-by-day monthly overview, an attendance grid, the K-pop chart, and the GGBae counter, each saved per browser via a Customize control.
+- Added pagination (with configurable page size and first/±5/±1/last navigation), an expand-to-full-height toggle, a member search box with a status filter, and a per-day claim-status indicator (corner dot for claim status, red ring when a claim still needs to be created) to the landing page's attendance grid.
+- Fixed the shared ScrollArea component, which was missing the CSS and structural `Content` wrapper needed to actually clip and scroll its content.
+- Removed the Claimed, Pending, Accepted, and Failed claim statuses from the Claims tab (status options, stat cards, filters, badges), along with the "Reset failed claims" retry action, "Last failure" alert, and failed-claim review item that were built around them, since none of them were being tracked; Required, Created, and (see below) Validated are the only statuses left.
+- Renamed the "Submitted" claim status to "Validated", intended to be set by the bot's new Validate feature once it confirms a claim cleared on the payer portal.
+- Fixed the claims-tab stat card row, which was still sized for 7 cards after the status cleanup above and left a large empty gap; it now fits the remaining 4 evenly.
+- Fixed a Postgres "date/time field value out of range" error caused by a malformed month value (e.g. Firefox's `<input type="month">` allowing the spinner to underflow past January to "00") reaching a Supabase date-range query; month values are now validated/normalized both where they're set and where they're turned into dates.
+
 ## [2.2.0] - 2026-08-14
 
 - Added a dedicated post-login homepage at `/` and moved the full member-management app surface to `/workspace`.

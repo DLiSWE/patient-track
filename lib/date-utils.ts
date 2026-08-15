@@ -4,6 +4,12 @@ import type { ServiceEntry } from "@/lib/service-store";
 
 export const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+const compactWeekdayLabels = ["SU", "M", "T", "W", "TH", "F", "SA"];
+
+export function getCompactWeekdayLabel(date: string): string {
+  return compactWeekdayLabels[parseDateString(date).getDay()];
+}
+
 export type CalendarDay = {
   date: string;
   dayNumber: number;

@@ -43,6 +43,7 @@ import type { Member } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 import {
   type CalendarDay,
+  getCompactWeekdayLabel,
   getDefaultDateForMonth,
   normalizeMonthString,
   type SummaryStats,
@@ -311,7 +312,10 @@ export function SummaryCard({
                         key={day.date}
                         className="sticky top-0 z-10 min-w-7 border-b bg-background px-0.5 py-1.5 text-center font-medium text-muted-foreground dark:border-white/10"
                       >
-                        {day.dayNumber}
+                        <span className="block text-[10px] leading-tight">
+                          {getCompactWeekdayLabel(day.date)}
+                        </span>
+                        <span className="block">{day.dayNumber}</span>
                       </th>
                     ))}
                   </tr>

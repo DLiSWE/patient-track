@@ -44,6 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -51,14 +52,16 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-import { fetchClaimsInRange, type Claim } from "@/lib/claim-store";
+import { fetchClaimsInRange, getClaimStatusStyle, type Claim } from "@/lib/claim-store";
 import {
   type CalendarDay,
   getCalendarDays,
+  getCompactWeekdayLabel,
   getExpectedMembersByDate,
   getExpectedServiceDatesForMonth,
   getMonthDateRange,
   getMonthInputValue,
+  normalizeMonthString,
   weekdayLabels,
 } from "@/lib/date-utils";
 import { isMemberActiveOnDate, mapMemberRow, type Member } from "@/lib/member-store";
@@ -214,6 +217,27 @@ const attendanceGridPageSizeOptions = [5, 10, 25, 50];
 const attendanceGridBigSkip = 5;
 const attendanceGridExpandedStorageKey = "sophia-attendance-grid-expanded";
 
+const attendanceGridStatusFilterOptions = [
+  { label: "All statuses", value: "all" },
+  { label: "Attended", value: "attended" },
+  { label: "Medical", value: "medical" },
+  { label: "Hold", value: "hold" },
+  { label: "Vacation", value: "vacation" },
+  { label: "Missing", value: "missing" },
+];
+
+function shiftMonth(month: string, delta: number): string {
+  const [year, monthNumber] = normalizeMonthString(month).split("-").map(Number);
+  return getMonthInputValue(new Date(year, monthNumber - 1 + delta, 1));
+}
+
+function formatMonthLabel(month: string): string {
+  return new Date(`${normalizeMonthString(month)}-01T00:00:00`).toLocaleDateString([], {
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
@@ -226,6 +250,7 @@ export default function HomePage() {
   const [monthClaims, setMonthClaims] = useState<Claim[]>([]);
   const [isWidgetDataLoading, setIsWidgetDataLoading] = useState(true);
 
+  const [landingMonth, setLandingMonth] = useState(getMonthInputValue());
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false);
   const [widgetVisibility, setWidgetVisibility] = useState<
     Record<LandingWidgetKey, boolean>
@@ -373,7 +398,7 @@ export default function HomePage() {
 
     async function loadWidgetData() {
       setIsWidgetDataLoading(true);
-      const monthRange = getMonthDateRange(getMonthInputValue());
+      const monthRange = getMonthDateRange(landingMonth);
 
       const [membersResult, servicesResult, claimsResult] = await Promise.all([
         supabaseClient
@@ -405,7 +430,7 @@ export default function HomePage() {
     return () => {
       isCancelled = true;
     };
-  }, [session]);
+  }, [landingMonth, session]);
 
   const today = getTodayDate();
   const activeMembers = useMemo(
@@ -424,8 +449,20 @@ export default function HomePage() {
 
     for (const claim of monthClaims) {
       const status = claim.status.toLowerCase();
-      if (status in counts) {
-        counts[status as keyof typeof counts] += 1;
+      if (status === "required") {
+        counts.required += 1;
+      } else if (status === "validated") {
+        counts.accepted += 1;
+      } else {
+        // "Created" (and any other non-terminal status) is awaiting validation.
+        counts.pending += 1;
+      }
+
+      if (claim.lastFailureReason) {
+        counts.failed += 1;
+      }
+      if (claim.submittedAt) {
+        counts.submitted += 1;
       }
     }
 
@@ -471,6 +508,8 @@ export default function HomePage() {
   const [attendanceGridPage, setAttendanceGridPage] = useState(0);
   const [attendanceGridPageSize, setAttendanceGridPageSize] = useState(10);
   const [isAttendanceGridExpanded, setIsAttendanceGridExpanded] = useState(false);
+  const [attendanceGridQuery, setAttendanceGridQuery] = useState("");
+  const [attendanceGridStatusFilter, setAttendanceGridStatusFilter] = useState("all");
 
   useEffect(() => {
     try {
@@ -495,8 +534,7 @@ export default function HomePage() {
     });
   }
 
-  const currentMonth = getMonthInputValue();
-  const calendarDays = useMemo(() => getCalendarDays(currentMonth), [currentMonth]);
+  const calendarDays = useMemo(() => getCalendarDays(landingMonth), [landingMonth]);
   const countsByDate = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of monthServiceEntries) {
@@ -505,8 +543,8 @@ export default function HomePage() {
     return counts;
   }, [monthServiceEntries]);
   const expectedMembersByDate = useMemo(
-    () => getExpectedMembersByDate(currentMonth, activeMembers, today),
-    [activeMembers, currentMonth, today]
+    () => getExpectedMembersByDate(landingMonth, activeMembers, today),
+    [activeMembers, landingMonth, today]
   );
   const attendanceGridDays = useMemo(
     () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
@@ -524,7 +562,7 @@ export default function HomePage() {
     for (const member of activeMembers) {
       const memberStatuses = statusByMember.get(member.id) ?? new Map<string, string>();
       const missingDates = getExpectedServiceDatesForMonth(
-        currentMonth,
+        landingMonth,
         member.serviceDays,
         new Set(memberStatuses.keys())
       ).filter((date) => date <= today && isMemberActiveOnDate(member, date));
@@ -539,7 +577,20 @@ export default function HomePage() {
     }
 
     return statusByMember;
-  }, [activeMembers, currentMonth, monthServiceEntries, today]);
+  }, [activeMembers, landingMonth, monthServiceEntries, today]);
+
+  const attendanceGridClaimStatusByMember = useMemo(() => {
+    const claimStatusByMember = new Map<string, Map<string, string>>();
+
+    for (const claim of monthClaims) {
+      const memberClaims =
+        claimStatusByMember.get(claim.memberId) ?? new Map<string, string>();
+      memberClaims.set(claim.serviceDate, claim.status);
+      claimStatusByMember.set(claim.memberId, memberClaims);
+    }
+
+    return claimStatusByMember;
+  }, [monthClaims]);
 
   const sortedAttendanceGridMembers = useMemo(
     () =>
@@ -548,14 +599,48 @@ export default function HomePage() {
       ),
     [activeMembers]
   );
+  const filteredAttendanceGridMembers = useMemo(() => {
+    const normalizedQuery = attendanceGridQuery.trim().toLowerCase();
+
+    return sortedAttendanceGridMembers.filter((member) => {
+      if (
+        normalizedQuery &&
+        !member.displayName.toLowerCase().includes(normalizedQuery)
+      ) {
+        return false;
+      }
+
+      if (attendanceGridStatusFilter === "all") {
+        return true;
+      }
+
+      const memberStatuses = attendanceGridStatusByMember.get(member.id);
+      if (!memberStatuses) {
+        return false;
+      }
+
+      for (const status of memberStatuses.values()) {
+        if (status.toLowerCase() === attendanceGridStatusFilter) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+  }, [
+    attendanceGridQuery,
+    attendanceGridStatusByMember,
+    attendanceGridStatusFilter,
+    sortedAttendanceGridMembers,
+  ]);
   const attendanceGridPageCount = Math.max(
     1,
-    Math.ceil(sortedAttendanceGridMembers.length / attendanceGridPageSize)
+    Math.ceil(filteredAttendanceGridMembers.length / attendanceGridPageSize)
   );
   const safeAttendanceGridPage = Math.min(attendanceGridPage, attendanceGridPageCount - 1);
   const visibleAttendanceGridMembers = isAttendanceGridExpanded
-    ? sortedAttendanceGridMembers
-    : sortedAttendanceGridMembers.slice(
+    ? filteredAttendanceGridMembers
+    : filteredAttendanceGridMembers.slice(
         safeAttendanceGridPage * attendanceGridPageSize,
         safeAttendanceGridPage * attendanceGridPageSize + attendanceGridPageSize
       );
@@ -639,15 +724,46 @@ export default function HomePage() {
                 workspace.
               </p>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setIsCustomizeOpen(true)}
-            >
-              <LayoutGridIcon className="mr-2 h-4 w-4" />
-              Customize
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-lg border p-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Previous month"
+                  onClick={() => {
+                    setLandingMonth((month) => shiftMonth(month, -1));
+                    setAttendanceGridPage(0);
+                  }}
+                >
+                  <ChevronLeftIcon />
+                </Button>
+                <span className="min-w-28 text-center text-sm font-medium">
+                  {formatMonthLabel(landingMonth)}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Next month"
+                  onClick={() => {
+                    setLandingMonth((month) => shiftMonth(month, 1));
+                    setAttendanceGridPage(0);
+                  }}
+                >
+                  <ChevronRightIcon />
+                </Button>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsCustomizeOpen(true)}
+              >
+                <LayoutGridIcon className="mr-2 h-4 w-4" />
+                Customize
+              </Button>
+            </div>
           </div>
 
           {noWidgetsSelected ? (
@@ -850,11 +966,70 @@ export default function HomePage() {
                   <span className="size-2.5 rounded-sm bg-muted dark:bg-white/10" />
                   Not expected
                 </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="relative size-2.5">
+                    <span className="block size-2.5 rounded-sm bg-emerald-500" />
+                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-teal-500 ring-1 ring-background" />
+                  </span>
+                  Corner dot = claim status
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-sm bg-emerald-500 ring-2 ring-rose-500 ring-offset-1 ring-offset-background" />
+                  Red ring = claim needed
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  aria-label="Search members"
+                  className="h-9 sm:w-56"
+                  placeholder="Search members"
+                  value={attendanceGridQuery}
+                  onChange={(event) => {
+                    setAttendanceGridQuery(event.target.value);
+                    setAttendanceGridPage(0);
+                  }}
+                />
+                <Select
+                  value={attendanceGridStatusFilter}
+                  onValueChange={(value) => {
+                    setAttendanceGridStatusFilter(value ?? "all");
+                    setAttendanceGridPage(0);
+                  }}
+                >
+                  <SelectTrigger className="w-40">
+                    <span>
+                      {
+                        attendanceGridStatusFilterOptions.find(
+                          (option) => option.value === attendanceGridStatusFilter
+                        )?.label
+                      }
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {attendanceGridStatusFilterOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <span className="text-xs text-muted-foreground">
+                  {filteredAttendanceGridMembers.length} of{" "}
+                  {sortedAttendanceGridMembers.length} member
+                  {sortedAttendanceGridMembers.length === 1 ? "" : "s"}
+                </span>
               </div>
 
               {attendanceGridDays.length === 0 || activeMembers.length === 0 ? (
                 <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
                   {isWidgetDataLoading ? "Loading..." : "No active members"}
+                </div>
+              ) : filteredAttendanceGridMembers.length === 0 ? (
+                <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+                  No members match this search/filter.
                 </div>
               ) : (
                 <>
@@ -870,7 +1045,10 @@ export default function HomePage() {
                               key={day.date}
                               className="min-w-7 border-b bg-background px-0.5 py-1.5 text-center font-medium text-muted-foreground dark:border-white/10"
                             >
-                              {day.dayNumber}
+                              <span className="block text-[10px] leading-tight">
+                                {getCompactWeekdayLabel(day.date)}
+                              </span>
+                              <span className="block">{day.dayNumber}</span>
                             </th>
                           ))}
                         </tr>
@@ -878,6 +1056,8 @@ export default function HomePage() {
                       <tbody>
                         {visibleAttendanceGridMembers.map((member) => {
                           const memberStatuses = attendanceGridStatusByMember.get(member.id);
+                          const memberClaimStatuses =
+                            attendanceGridClaimStatusByMember.get(member.id);
 
                           return (
                             <tr key={member.id}>
@@ -886,25 +1066,43 @@ export default function HomePage() {
                               </td>
                               {attendanceGridDays.map((day) => {
                                 const status = memberStatuses?.get(day.date);
+                                const claimStatus = memberClaimStatuses?.get(day.date);
+                                const needsClaim =
+                                  status?.toLowerCase() === "attended" &&
+                                  !claimStatus &&
+                                  day.date <= today;
+                                const titleParts = [
+                                  status ? `${member.displayName} — ${day.date}: ${status}` : null,
+                                  claimStatus ? `Claim: ${claimStatus}` : null,
+                                  needsClaim ? "Claim needed" : null,
+                                ].filter((part): part is string => Boolean(part));
 
                                 return (
                                   <td
                                     key={day.date}
                                     className="border-b px-0.5 py-1 dark:border-white/10"
-                                    title={
-                                      status
-                                        ? `${member.displayName} — ${day.date}: ${status}`
-                                        : undefined
-                                    }
+                                    title={titleParts.length > 0 ? titleParts.join(" | ") : undefined}
                                   >
-                                    <span
-                                      className={cn(
-                                        "mx-auto block size-4 rounded-sm",
-                                        status
-                                          ? getServiceStatusStyle(status).dot
-                                          : "bg-muted dark:bg-white/10"
-                                      )}
-                                    />
+                                    <span className="relative mx-auto block size-4">
+                                      <span
+                                        className={cn(
+                                          "block size-4 rounded-sm",
+                                          status
+                                            ? getServiceStatusStyle(status).dot
+                                            : "bg-muted dark:bg-white/10",
+                                          needsClaim &&
+                                            "ring-2 ring-rose-500 ring-offset-1 ring-offset-background"
+                                        )}
+                                      />
+                                      {claimStatus ? (
+                                        <span
+                                          className={cn(
+                                            "absolute -top-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-background",
+                                            getClaimStatusStyle(claimStatus).dot
+                                          )}
+                                        />
+                                      ) : null}
+                                    </span>
                                   </td>
                                 );
                               })}
@@ -917,7 +1115,8 @@ export default function HomePage() {
 
                   {isAttendanceGridExpanded ? (
                     <p className="text-xs text-muted-foreground">
-                      Showing all {sortedAttendanceGridMembers.length} active members.
+                      Showing all {filteredAttendanceGridMembers.length} of{" "}
+                      {sortedAttendanceGridMembers.length} active members.
                     </p>
                   ) : (
                   <div className="flex flex-wrap items-center justify-between gap-2">

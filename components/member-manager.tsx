@@ -1122,8 +1122,20 @@ export function MemberManager({
     for (const claim of summaryClaimsForMonth) {
       const status = claim.status.toLowerCase();
 
-      if (status in counts) {
-        counts[status as keyof typeof counts] += 1;
+      if (status === "required") {
+        counts.required += 1;
+      } else if (status === "validated") {
+        counts.accepted += 1;
+      } else {
+        // "Created" (and any other non-terminal status) is awaiting validation.
+        counts.pending += 1;
+      }
+
+      if (claim.lastFailureReason) {
+        counts.failed += 1;
+      }
+      if (claim.submittedAt) {
+        counts.submitted += 1;
       }
     }
 
@@ -2445,17 +2457,14 @@ export function MemberManager({
             member.id === editingId ? updatedMember : member
           )
         );
+        resetForm();
+        await loadDashboard(updatedMember.id);
         if (serviceForm.memberId === updatedMember.id) {
           setServiceMemberQuery(updatedMember.displayName);
+          setIsServiceMemberPickerOpen(false);
           setDateOverrides({});
           setStatusOverrides({});
         }
-        resetForm();
-        await loadDashboard(updatedMember.id);
-        setServiceMemberQuery(updatedMember.displayName);
-        setIsServiceMemberPickerOpen(false);
-        setDateOverrides({});
-        setStatusOverrides({});
         await refreshServiceCalendarMonth(updatedMember.id, calendarMonth);
         await recordAuditEvent({
           action: "member_updated",
