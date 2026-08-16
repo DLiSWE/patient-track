@@ -47,6 +47,18 @@ export function normalizeMonthString(month: string): string {
   return getMonthInputValue();
 }
 
+export function shiftMonth(month: string, delta: number): string {
+  const [year, monthNumber] = normalizeMonthString(month).split("-").map(Number);
+  return getMonthInputValue(new Date(year, monthNumber - 1 + delta, 1));
+}
+
+export function formatMonthLabel(month: string): string {
+  return new Date(`${normalizeMonthString(month)}-01T00:00:00`).toLocaleDateString([], {
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export function getDefaultDateForMonth(month: string) {
   const normalizedMonth = normalizeMonthString(month);
   const today = new Date().toLocaleDateString("en-CA");

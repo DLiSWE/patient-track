@@ -1,13 +1,11 @@
-import { RotateCcwIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, RotateCcwIcon, XIcon } from "lucide-react";
 
-import { Field } from "@/components/form-field";
 import { Button } from "@/components/ui/button";
 import { claimStatusOptions, getClaimStatusStyle } from "@/lib/claim-store";
-import { Input } from "@/components/ui/input";
 import {
   type CalendarDay,
-  getDefaultDateForMonth,
-  normalizeMonthString,
+  formatMonthLabel,
+  shiftMonth,
   weekdayLabels,
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
@@ -128,17 +126,29 @@ export function ServiceCalendar({
   return (
     <div className="flex flex-col gap-3">
       <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] md:items-end">
-        <Field label="Month" htmlFor="service-month">
-          <Input
-            id="service-month"
-            className="service-month-input w-full max-w-full min-w-0"
-            type="date"
-            value={getDefaultDateForMonth(month)}
-            onChange={(event) =>
-              onMonthChange(normalizeMonthString(event.target.value.slice(0, 7)))
-            }
-          />
-        </Field>
+        <div className="flex items-center gap-1 rounded-lg border p-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Previous month"
+            onClick={() => onMonthChange(shiftMonth(month, -1))}
+          >
+            <ChevronLeftIcon />
+          </Button>
+          <span className="flex-1 text-center text-sm font-medium">
+            {formatMonthLabel(month)}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Next month"
+            onClick={() => onMonthChange(shiftMonth(month, 1))}
+          >
+            <ChevronRightIcon />
+          </Button>
+        </div>
 
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 md:justify-self-end">
           <Button type="button" variant="outline" onClick={onResetExpected}>
