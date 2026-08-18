@@ -96,6 +96,8 @@ import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 import { Field } from "@/components/form-field";
 import { MemberDetailCard } from "@/components/member-detail-card";
 import { NewMembersCard } from "@/components/new-members-card";
+import { NotificationsBell } from "@/components/notifications-bell";
+import { findHoldsEndingSoon } from "@/lib/notifications";
 import { ServiceCalendar, getServiceStatusStyle } from "@/components/service-calendar";
 import { SummaryCard } from "@/components/summary-card";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -498,17 +500,22 @@ export function MemberManager({
     [members, todayDate]
   );
 
+  const holdEndingAlerts = useMemo(
+    () => findHoldsEndingSoon(members, serviceEntries, todayDate),
+    [members, serviceEntries, todayDate]
+  );
+
   const filteredMembers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     const nextMembers = normalizedQuery
-      ? activeMembers.filter((member) =>
+      ? members.filter((member) =>
         [member.displayName, member.provider, member.serviceDays]
           .join(" ")
           .toLowerCase()
           .includes(normalizedQuery)
       )
-      : activeMembers;
+      : members;
 
     return [...nextMembers].sort((left, right) => {
       const direction = directorySortDirection === "asc" ? 1 : -1;
@@ -529,7 +536,7 @@ export function MemberManager({
       return leftValue.localeCompare(rightValue) * direction;
     });
   }, [
-    activeMembers,
+    members,
     directorySortDirection,
     directorySortField,
     query,
@@ -3442,17 +3449,27 @@ export function MemberManager({
                 {viewTitles[activeView]}
               </h1>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
-              aria-label={isMobileNavOpen ? "Close navigation" : "Open navigation"}
-              aria-expanded={isMobileNavOpen}
-              onClick={() => setIsMobileNavOpen((isOpen) => !isOpen)}
-            >
-              {isMobileNavOpen ? <XIcon /> : <MenuIcon />}
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <NotificationsBell
+                holdEndingAlerts={holdEndingAlerts}
+                onSelectMember={(memberId) => {
+                  setSelectedMemberId(memberId);
+                  setActiveView("member");
+                }}
+                className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
+                aria-label={isMobileNavOpen ? "Close navigation" : "Open navigation"}
+                aria-expanded={isMobileNavOpen}
+                onClick={() => setIsMobileNavOpen((isOpen) => !isOpen)}
+              >
+                {isMobileNavOpen ? <XIcon /> : <MenuIcon />}
+              </Button>
+            </div>
           </div>
 
           <div
@@ -3462,9 +3479,19 @@ export function MemberManager({
             )}
           >
             <div className="hidden flex-col gap-4 lg:flex">
-              <p className="text-sm font-medium text-sidebar-foreground/70">
-                Sophia Members
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium text-sidebar-foreground/70">
+                  Sophia Members
+                </p>
+                <NotificationsBell
+                  holdEndingAlerts={holdEndingAlerts}
+                  onSelectMember={(memberId) => {
+                    setSelectedMemberId(memberId);
+                    setActiveView("member");
+                  }}
+                  className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
+                />
+              </div>
               <div className="flex flex-col gap-3">
                 <h1 className="text-3xl font-semibold tracking-tight">
                   Member directory
