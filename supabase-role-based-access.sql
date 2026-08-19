@@ -45,6 +45,12 @@ as $$
   );
 $$;
 
+-- SECURITY DEFINER functions get EXECUTE granted to PUBLIC by default in
+-- Postgres. Every policy that calls this runs `to authenticated`, so anon
+-- never needs to call it directly -- narrow the grant accordingly.
+revoke execute on function public.is_app_user() from public;
+grant execute on function public.is_app_user() to authenticated;
+
 -- members: no supabase-members.sql exists in this repo (created via the
 -- dashboard originally), so exact current PERMISSIVE policy names aren't
 -- known here. Drop only permissive policies by querying pg_policies instead

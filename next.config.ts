@@ -15,20 +15,31 @@ const isProd = process.env.NODE_ENV === "production";
 // escapes all rendered content by default, so the realistic exposure is low.
 // Revisit if Next.js's nonce auto-propagation gets fixed for Turbopack, or if
 // this app ever adds a user-content-rendering surface.
-const scriptSrc = ["'self'", "'unsafe-inline'", ...(isProd ? [] : ["'unsafe-eval'"])];
+const scriptSrc = [
+  "'self'",
+  "'unsafe-inline'",
+  ...(isProd ? [] : ["'unsafe-eval'"]),
+  // hCaptcha widget script (sign-in / delete-confirmation forms).
+  "https://*.hcaptcha.com",
+];
 
 const contentSecurityPolicy = [
   `default-src 'self'`,
   `script-src ${scriptSrc.join(" ")}`,
   // Inline style={{}} attributes are used throughout the app's components, so
   // style-src needs 'unsafe-inline' too. Can't execute JS, so much lower risk.
-  `style-src 'self' 'unsafe-inline'`,
+  // hCaptcha's widget also injects its own inline styles.
+  `style-src 'self' 'unsafe-inline' https://*.hcaptcha.com`,
   // MFA QR codes are rendered as data: URIs (see getMfaQrCodeImageUrl), never
   // fetched from an external host.
   `img-src 'self' data:`,
   `font-src 'self'`,
   // The app talks directly to Supabase from the browser (no /api routes).
-  `connect-src 'self' https://*.supabase.co`,
+  // hCaptcha's script makes its own verification calls to hcaptcha.com.
+  `connect-src 'self' https://*.supabase.co https://*.hcaptcha.com`,
+  // No frame-src previously existed, so it fell back to default-src 'self',
+  // which blocks the hCaptcha challenge iframe entirely.
+  `frame-src 'self' https://*.hcaptcha.com`,
   `frame-ancestors 'none'`,
   `object-src 'none'`,
   `base-uri 'self'`,

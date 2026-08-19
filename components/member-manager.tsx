@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 import { toast } from "sonner";
 import {
   AlertCircleIcon,
@@ -160,6 +161,8 @@ import {
   normalizeMonthString,
 } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
+
+const hcaptchaSiteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY || "";
 
 type AuthForm = {
   email: string;
@@ -348,6 +351,8 @@ export function MemberManager({
   const [dateOverrides, setDateOverrides] = useState<Record<string, DateOverride>>({});
   const [forceDeleteClaimsOnSave, setForceDeleteClaimsOnSave] = useState(false);
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const hcaptchaRef = useRef<HCaptcha>(null);
   const [failedSignInState, setFailedSignInState] = useState<FailedSignInState>(
     getStoredFailedSignInState
   );
@@ -384,6 +389,8 @@ export function MemberManager({
   );
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteAuthError, setDeleteAuthError] = useState<string | null>(null);
+  const [deleteCaptchaToken, setDeleteCaptchaToken] = useState<string | null>(null);
+  const deleteHcaptchaRef = useRef<HCaptcha>(null);
   const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
   const [bulkAddRowCount, setBulkAddRowCount] = useState(3);
   const [selectedServiceEntryIds, setSelectedServiceEntryIds] = useState<Set<string>>(
@@ -1556,6 +1563,11 @@ export function MemberManager({
       return;
     }
 
+    if (hcaptchaSiteKey && !captchaToken) {
+      showError("Complete the captcha before signing in.");
+      return;
+    }
+
     setIsSaving(true);
     setBusyMessage("Checking sign in...");
 
@@ -1563,7 +1575,14 @@ export function MemberManager({
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password: authForm.password,
+      options: captchaToken ? { captchaToken } : undefined,
     });
+
+    // hCaptcha tokens are single-use and expire quickly -- always reset the
+    // widget after an attempt so the next submit (retry or otherwise) has a
+    // fresh token instead of silently reusing a spent one.
+    hcaptchaRef.current?.resetCaptcha();
+    setCaptchaToken(null);
 
     if (error) {
       const nextAttempts = currentFailedSignInState.attempts + 1;
@@ -2746,6 +2765,11 @@ export function MemberManager({
       return;
     }
 
+    if (hcaptchaSiteKey && !deleteCaptchaToken) {
+      setDeleteAuthError("Complete the captcha before confirming.");
+      return;
+    }
+
     const verifiedSession = session;
 
     setDeleteAuthError(null);
@@ -2755,7 +2779,11 @@ export function MemberManager({
     const { error: authError } = await supabase.auth.signInWithPassword({
       email,
       password: deletePassword,
+      options: deleteCaptchaToken ? { captchaToken: deleteCaptchaToken } : undefined,
     });
+
+    deleteHcaptchaRef.current?.resetCaptcha();
+    setDeleteCaptchaToken(null);
 
     if (authError) {
       setDeleteAuthError("Password confirmation failed.");
@@ -3242,12 +3270,26 @@ export function MemberManager({
                 />
               </Field>
 
+              {hcaptchaSiteKey ? (
+                <div className="flex justify-center">
+                  <HCaptcha
+                    ref={hcaptchaRef}
+                    sitekey={hcaptchaSiteKey}
+                    theme="dark"
+                    onVerify={(token) => setCaptchaToken(token)}
+                    onExpire={() => setCaptchaToken(null)}
+                    onError={() => setCaptchaToken(null)}
+                  />
+                </div>
+              ) : null}
+
               <Button
                 type="submit"
                 disabled={
                   isSaving ||
                   isLoading ||
-                  isSignInLocked
+                  isSignInLocked ||
+                  (Boolean(hcaptchaSiteKey) && !captchaToken)
                 }
               >
                 {isSaving || isLoading ? <Loader2Icon data-icon="inline-start" /> : null}
@@ -4529,6 +4571,7 @@ export function MemberManager({
                 {homeWidgetVisibility.statusCards ? (
                 <div className="mb-5 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
                   <NewMembersCard
+                    defaultCollapsed
                     title="On hold"
                     description={`${membersOnHold.length} last tracked as hold`}
                     emptyMessage="No members on hold"
@@ -4541,6 +4584,7 @@ export function MemberManager({
                     onPageChange={setHoldMembersPage}
                   />
                   <NewMembersCard
+                    defaultCollapsed
                     title="Medical"
                     description={`${membersOnMedical.length} last tracked as medical`}
                     emptyMessage="No members on medical"
@@ -4553,6 +4597,7 @@ export function MemberManager({
                     onPageChange={setMedicalMembersPage}
                   />
                   <NewMembersCard
+                    defaultCollapsed
                     title="Vacation"
                     description={`${membersOnVacation.length} last tracked as vacation`}
                     emptyMessage="No members on vacation"
@@ -5337,6 +5382,8 @@ export function MemberManager({
             setDeleteTarget(null);
             setDeletePassword("");
             setDeleteAuthError(null);
+            setDeleteCaptchaToken(null);
+            deleteHcaptchaRef.current?.resetCaptcha();
           }
         }}
       >
@@ -5370,6 +5417,18 @@ export function MemberManager({
                 }
               }}
             />
+            {hcaptchaSiteKey ? (
+              <div className="flex justify-center">
+                <HCaptcha
+                  ref={deleteHcaptchaRef}
+                  sitekey={hcaptchaSiteKey}
+                  theme="dark"
+                  onVerify={(token) => setDeleteCaptchaToken(token)}
+                  onExpire={() => setDeleteCaptchaToken(null)}
+                  onError={() => setDeleteCaptchaToken(null)}
+                />
+              </div>
+            ) : null}
             {deleteAuthError ? (
               <p className="text-sm text-destructive">{deleteAuthError}</p>
             ) : null}
@@ -5379,7 +5438,9 @@ export function MemberManager({
             <AlertDialogAction
               variant="destructive"
               onClick={confirmDeleteMember}
-              disabled={isSaving || !deletePassword}
+              disabled={
+                isSaving || !deletePassword || Boolean(hcaptchaSiteKey && !deleteCaptchaToken)
+              }
             >
               Delete
             </AlertDialogAction>

@@ -821,6 +821,7 @@ export default function HomePage() {
               style={{ order: widgetOrder.indexOf("memberStatus") }}
             >
               <NewMembersCard
+                defaultCollapsed
                 title="On hold"
                 description={`${membersOnHold.length} last tracked as hold`}
                 emptyMessage="No members on hold"
@@ -833,6 +834,7 @@ export default function HomePage() {
                 onPageChange={setHoldPage}
               />
               <NewMembersCard
+                defaultCollapsed
                 title="Medical"
                 description={`${membersOnMedical.length} last tracked as medical`}
                 emptyMessage="No members on medical"
@@ -845,6 +847,7 @@ export default function HomePage() {
                 onPageChange={setMedicalPage}
               />
               <NewMembersCard
+                defaultCollapsed
                 title="Vacation"
                 description={`${membersOnVacation.length} last tracked as vacation`}
                 emptyMessage="No members on vacation"

@@ -44,6 +44,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 
 Do not place the Supabase service-role key in frontend environment variables.
 
+Optionally, set `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` to enable hCaptcha bot protection on the sign-in form and the delete-member confirmation dialog. Without it, both flows work as before with no captcha step. The matching secret key is never an env var here -- it's configured in the Supabase dashboard (Authentication -> Attack Protection), which is what actually verifies the captcha token server-side.
+
 ## Security posture
 
 - The app talks directly to Supabase from the browser, so RLS is the real access-control boundary.

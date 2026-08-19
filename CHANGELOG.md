@@ -4,6 +4,9 @@ All notable changes to the Sophia Members web app should be recorded here.
 
 ## [Unreleased]
 
+- Added hCaptcha bot protection to the sign-in form and the delete-member confirmation dialog, gated behind `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` so it stays a no-op until that's configured; widget is centered in both spots.
+- Security: extended the CSP to allow hCaptcha's script, iframe, and verification calls (`script-src`, `style-src`, `connect-src`, and a new `frame-src`, which didn't exist before and was blocking all iframes by falling back to `default-src 'self'`) so the widget above isn't silently blocked in production.
+- Security: revoked the default PUBLIC execute grant on `is_app_user()` and `is_super_admin()` (SECURITY DEFINER functions used throughout RLS), since every policy that calls them already runs `to authenticated` and anon never needed direct execute access. Flagged by the Supabase Security Advisor as "Public Can Execute SECURITY DEFINER Function"; requires re-running `supabase-app-profiles.sql` and `supabase-role-based-access.sql` against the database for the grant change to take effect.
 - Added an Attendance grid to the Summary tab showing every active member's daily status for the month, with member search.
 - Added a Customize control to the Summary tab for showing/hiding its cards (claim status, attendance grid, calendar), saved per browser.
 - Added On hold / Medical / Vacation status cards to the Members tab, driven by each member's most recently recorded service, with a configurable page size.

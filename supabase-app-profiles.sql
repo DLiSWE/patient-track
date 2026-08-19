@@ -28,6 +28,12 @@ as $$
   );
 $$;
 
+-- SECURITY DEFINER functions get EXECUTE granted to PUBLIC by default in
+-- Postgres. Every policy that calls this runs `to authenticated`, so anon
+-- never needs to call it directly -- narrow the grant accordingly.
+revoke execute on function public.is_super_admin() from public;
+grant execute on function public.is_super_admin() to authenticated;
+
 create or replace function public.set_app_profiles_updated_at()
 returns trigger
 language plpgsql
