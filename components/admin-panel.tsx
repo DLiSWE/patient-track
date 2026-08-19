@@ -6,7 +6,6 @@ import {
   ChevronRightIcon,
   CrownIcon,
   HistoryIcon,
-  ShieldCheckIcon,
 } from "lucide-react";
 
 import type { AppProfile } from "@/lib/admin-store";
@@ -62,9 +61,6 @@ export function AdminPanel({
   securityEvents,
 }: AdminPanelProps) {
   const onlineCount = onlineProfiles.length;
-  const superAdminCount = onlineProfiles.filter(
-    (profile) => profile.role === "super_admin"
-  ).length;
 
   return (
     <div className="flex flex-col gap-5">

@@ -98,7 +98,8 @@ import { Field } from "@/components/form-field";
 import { MemberDetailCard } from "@/components/member-detail-card";
 import { NewMembersCard } from "@/components/new-members-card";
 import { NotificationsBell } from "@/components/notifications-bell";
-import { findHoldsEndingSoon } from "@/lib/notifications";
+import type { NotificationItem } from "@/lib/notifications";
+import { findStatusEndingSoon, statusEndingAlertsToNotifications } from "@/lib/notifications";
 import { ServiceCalendar, getServiceStatusStyle } from "@/components/service-calendar";
 import { SummaryCard } from "@/components/summary-card";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -149,6 +150,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  addDaysToDateString,
   getCalendarDays,
   getDefaultDateForMonth,
   getExpectedMembersByDate,
@@ -326,6 +328,11 @@ export function MemberManager({
     try {
       const raw = window.localStorage.getItem(homeWidgetStorageKey);
       if (raw) {
+        // Deliberately in an effect, not a lazy useState initializer:
+        // localStorage isn't available during SSR/first hydration pass, so
+        // reading it here (post-mount) instead of during render is what
+        // avoids a hydration mismatch, not what causes one.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setHomeWidgetVisibility((current) => ({ ...current, ...JSON.parse(raw) }));
       }
     } catch {
@@ -372,6 +379,20 @@ export function MemberManager({
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(
     initialSelectedMemberId
   );
+  // Tracks the last initialSelectedMemberId we've reacted to, so a change in
+  // that prop (client-side navigation between two member detail URLs without
+  // unmounting) can be applied during render instead of via an effect --
+  // avoids an extra render where the old member is still showing.
+  const [appliedInitialSelectedMemberId, setAppliedInitialSelectedMemberId] = useState(
+    initialSelectedMemberId
+  );
+  if (initialSelectedMemberId !== appliedInitialSelectedMemberId) {
+    setAppliedInitialSelectedMemberId(initialSelectedMemberId);
+    if (initialSelectedMemberId) {
+      setSelectedMemberId(initialSelectedMemberId);
+      setActiveView("member");
+    }
+  }
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -403,6 +424,7 @@ export function MemberManager({
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [isSaving, setIsSaving] = useState(false);
+  const [isExtendingStatus, setIsExtendingStatus] = useState(false);
   const [isMonthLoading, setIsMonthLoading] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [calendarLoadingMessage, setCalendarLoadingMessage] = useState<string | null>(
@@ -423,13 +445,6 @@ export function MemberManager({
       window.clearTimeout(timeoutId);
     };
   }, [failedSignInState.lockedUntil]);
-
-  useEffect(() => {
-    if (initialSelectedMemberId) {
-      setSelectedMemberId(initialSelectedMemberId);
-      setActiveView("member");
-    }
-  }, [initialSelectedMemberId]);
 
   useEffect(() => {
     if (!supabase) {
@@ -496,6 +511,8 @@ export function MemberManager({
   }, [hasMfaFactor, isLoading, isMfaChallengeRequired, isMfaChecking, mode, router, session]);
 
   const isSuperAdmin = appProfile?.role === "super_admin";
+  const isManagerOrAbove =
+    appProfile?.role === "manager" || appProfile?.role === "super_admin";
   const todayDate = getTodayDate();
 
   const activeMembers = useMemo(
@@ -507,9 +524,16 @@ export function MemberManager({
     [members, todayDate]
   );
 
-  const holdEndingAlerts = useMemo(
-    () => findHoldsEndingSoon(members, serviceEntries, todayDate),
+  const statusEndingAlerts = useMemo(
+    () => findStatusEndingSoon(members, serviceEntries, todayDate),
     [members, serviceEntries, todayDate]
+  );
+  // Each alert source gets its own detector above and its own adapter into
+  // the generic NotificationItem shape here -- add more sources by
+  // concatenating another `xToNotifications(...)` call into this list.
+  const notifications = useMemo(
+    () => statusEndingAlertsToNotifications(statusEndingAlerts),
+    [statusEndingAlerts]
   );
 
   const filteredMembers = useMemo(() => {
@@ -837,6 +861,16 @@ export function MemberManager({
     [calendarMonth]
   );
 
+  const authAlertDatesForMemberMonth = useMemo(() => {
+    const authExpiresOn = selectedServiceMember?.authExpiresOn;
+    if (!authExpiresOn) {
+      return new Set<string>();
+    }
+    return new Set(
+      calendarDays.flatMap((day) => (day && day.date > authExpiresOn ? [day.date] : []))
+    );
+  }, [calendarDays, selectedServiceMember]);
+
   const expectedServiceDates = useMemo(
     () =>
       getExpectedServiceDatesForMonth(
@@ -1140,8 +1174,10 @@ export function MemberManager({
         counts.required += 1;
       } else if (status === "validated") {
         counts.accepted += 1;
-      } else {
+      } else if (status !== "failed") {
         // "Created" (and any other non-terminal status) is awaiting validation.
+        // "Failed" is deliberately excluded -- it's already counted below and
+        // isn't "awaiting validation" in the normal sense.
         counts.pending += 1;
       }
 
@@ -1316,7 +1352,7 @@ export function MemberManager({
     try {
       const membersRequest = supabase
         .from("members")
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .order("display_name", { ascending: true });
 
       const [membersResult, servicesResult, claimsResult] = await Promise.all([
@@ -1436,7 +1472,11 @@ export function MemberManager({
 
   useEffect(() => {
     if (!isSuperAdmin) {
-      if (activeView === "admin" && appProfile) {
+      if ((activeView === "admin" || activeView === "audit") && appProfile) {
+        // Redirect-away guard, kept in the same effect as loadAdminData
+        // below (a genuine async fetch) since both react to the same
+        // isSuperAdmin/appProfile/activeView inputs.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setActiveView("members");
       }
       return;
@@ -1603,7 +1643,7 @@ export function MemberManager({
         showError(getLockoutMessage(lockedUntil));
       } else {
         showError(
-          `${error.message} ${maxFailedSignInAttempts - nextAttempts} attempts left.`
+          `${getSignInErrorMessage(error)} ${maxFailedSignInAttempts - nextAttempts} attempts left.`
         );
       }
     } else {
@@ -2109,6 +2149,156 @@ export function MemberManager({
     setIsSaving(false);
   }
 
+  async function handleExtendStatus(item: NotificationItem, weeks: number) {
+    const resolution = item.resolution;
+
+    if (!supabase || !resolution || resolution.kind !== "extend-status") {
+      return;
+    }
+
+    const member = memberById.get(resolution.memberId);
+
+    if (!member) {
+      showError("This member could not be found.");
+      return;
+    }
+
+    if (!member.serviceDays) {
+      showError("This member has no service day schedule to extend into.");
+      return;
+    }
+
+    const statusLabel =
+      serviceStatusOptions.find(
+        (option) => option.value.toLowerCase() === resolution.statusLabel
+      )?.value ?? resolution.statusLabel;
+
+    const start = addDaysToDateString(resolution.lastStatusDate, 1);
+    const end = addDaysToDateString(resolution.lastStatusDate, weeks * 7);
+
+    if (end < start) {
+      showError("Nothing to extend.");
+      return;
+    }
+
+    const supabaseClient = supabase;
+    const affectedMonths = getMonthsForDateRange(start, end);
+
+    setIsExtendingStatus(true);
+    setBusyMessage(`Extending ${statusLabel} for ${member.displayName}...`);
+
+    const existingResult = await fetchServiceEntriesInRange(supabaseClient, start, end);
+
+    if (existingResult.error) {
+      showError(existingResult.error.message);
+      setIsExtendingStatus(false);
+      return;
+    }
+
+    const recordedDates = new Set(
+      existingResult.data
+        .filter((entry) => entry.memberId === member.id)
+        .map((entry) => entry.serviceDate)
+    );
+
+    const expectedDates = getExpectedServiceDatesInRange(
+      start,
+      end,
+      member.serviceDays,
+      recordedDates
+    ).filter((serviceDate) => isMemberActiveOnDate(member, serviceDate));
+
+    if (expectedDates.length === 0) {
+      showInfo("No open service days to fill in that window.");
+      setIsExtendingStatus(false);
+      return;
+    }
+
+    const inserts = expectedDates.map((serviceDate) =>
+      toServiceEntryInsert({
+        memberId: member.id,
+        serviceDate,
+        serviceLabel: statusLabel,
+      })
+    );
+
+    const { error } = await supabaseClient
+      .from("service_entries")
+      .upsert(inserts, { ignoreDuplicates: true, onConflict: "member_id,service_date" });
+
+    if (error) {
+      showError(error.message);
+      setIsExtendingStatus(false);
+      return;
+    }
+
+    const refreshedMonthResults = await Promise.all(
+      affectedMonths.map((month) => {
+        const monthRange = getMonthDateRange(month);
+        return fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end);
+      })
+    );
+
+    for (const refreshedMonthResult of refreshedMonthResults) {
+      if (refreshedMonthResult.error) {
+        showError(refreshedMonthResult.error.message);
+        setIsExtendingStatus(false);
+        return;
+      }
+    }
+
+    setServiceEntries((currentEntries) => {
+      let nextEntries = currentEntries;
+
+      for (let index = 0; index < affectedMonths.length; index += 1) {
+        nextEntries = replaceServiceEntriesForMonth(
+          nextEntries,
+          affectedMonths[index],
+          refreshedMonthResults[index].data
+        );
+      }
+
+      return nextEntries;
+    });
+    setLoadedDataMonths((currentMonths) => {
+      const nextMonths = new Set(currentMonths);
+
+      for (const affectedMonth of affectedMonths) {
+        nextMonths.add(affectedMonth);
+      }
+
+      return nextMonths;
+    });
+
+    await recordAuditEvent({
+      action: "status_extended",
+      entityType: "service",
+      entityId: member.id,
+      summary: `Extended ${statusLabel} for ${member.displayName} by ${weeks} week${
+        weeks === 1 ? "" : "s"
+      }.`,
+      metadata: {
+        member: member.displayName,
+        status: statusLabel,
+        weeks,
+        start,
+        end,
+        added: expectedDates.length,
+      },
+    });
+
+    const endLabel = new Date(`${end}T00:00:00`).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+    showInfo(
+      `Extended ${statusLabel} for ${member.displayName} through ${endLabel}. Filled ${
+        expectedDates.length
+      } service day${expectedDates.length === 1 ? "" : "s"}.`
+    );
+    setIsExtendingStatus(false);
+  }
+
   async function updateServiceEntryStatus(entryId: string, newLabel: string) {
     if (!supabase) {
       return false;
@@ -2471,7 +2661,7 @@ export function MemberManager({
         .from("members")
         .update(toMemberUpdate(memberPayload))
         .eq("id", editingId)
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .single();
 
       if (error) {
@@ -2509,7 +2699,7 @@ export function MemberManager({
       const { data, error } = await supabase
         .from("members")
         .insert(toMemberInsert(memberPayload))
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .single();
 
       if (error) {
@@ -2579,7 +2769,7 @@ export function MemberManager({
     const { data, error } = await supabase
       .from("members")
       .insert(inserts)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at");
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on");
 
     if (error) {
       showError(error.message);
@@ -2649,7 +2839,7 @@ export function MemberManager({
       .from("members")
       .update({ archived_at: archivedAt, updated_at: new Date().toISOString() })
       .eq("id", archiveTarget.id)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
       .single();
 
     if (error) {
@@ -2719,7 +2909,7 @@ export function MemberManager({
       .from("members")
       .update({ archived_at: null })
       .eq("id", member.id)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
       .single();
 
     if (error) {
@@ -3493,11 +3683,13 @@ export function MemberManager({
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <NotificationsBell
-                holdEndingAlerts={holdEndingAlerts}
+                notifications={notifications}
+                isExtendingStatus={isExtendingStatus}
                 onSelectMember={(memberId) => {
                   setSelectedMemberId(memberId);
                   setActiveView("member");
                 }}
+                onExtendStatus={handleExtendStatus}
                 className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
               />
               <Button
@@ -3526,11 +3718,13 @@ export function MemberManager({
                   Sophia Members
                 </p>
                 <NotificationsBell
-                  holdEndingAlerts={holdEndingAlerts}
+                  notifications={notifications}
+                  isExtendingStatus={isExtendingStatus}
                   onSelectMember={(memberId) => {
                     setSelectedMemberId(memberId);
                     setActiveView("member");
                   }}
+                  onExtendStatus={handleExtendStatus}
                   className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground"
                 />
               </div>
@@ -3714,22 +3908,24 @@ export function MemberManager({
                 <BarChart3Icon data-icon="inline-start" />
                 Summary
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className={cn(
-                  "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                  activeView === "audit" &&
-                  "bg-sidebar-accent text-sidebar-accent-foreground"
-                )}
-                onClick={() => {
-                  setActiveView("audit");
-                  setIsMobileNavOpen(false);
-                }}
-              >
-                <HistoryIcon data-icon="inline-start" />
-                Audit
-              </Button>
+              {isSuperAdmin ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={cn(
+                    "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                    activeView === "audit" &&
+                    "bg-sidebar-accent text-sidebar-accent-foreground"
+                  )}
+                  onClick={() => {
+                    setActiveView("audit");
+                    setIsMobileNavOpen(false);
+                  }}
+                >
+                  <HistoryIcon data-icon="inline-start" />
+                  Audit
+                </Button>
+              ) : null}
               {isSuperAdmin ? (
                 <Button
                   type="button"
@@ -3848,7 +4044,7 @@ export function MemberManager({
                 visibleEntries={visibleSummaryEntries}
                 visibleExpectedMembers={visibleSummaryExpectedMembers}
               />
-            ) : activeView === "audit" ? (
+            ) : activeView === "audit" && isSuperAdmin ? (
               <AuditLog />
             ) : activeView === "admin" && isSuperAdmin ? (
               <AdminPanel
@@ -3875,6 +4071,7 @@ export function MemberManager({
               <ClaimsDashboard
                 claims={claimsForClaimsMonth}
                 isLoading={isClaimsMonthLoading}
+                isManagerOrAbove={isManagerOrAbove}
                 memberById={memberById}
                 members={activeMembers}
                 month={claimsMonth}
@@ -3940,18 +4137,20 @@ export function MemberManager({
                         <CalendarRangeIcon data-icon="inline-start" />
                         Bulk fill selected range
                       </Button>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        disabled={isSaving || !bulkFillStartDate || !bulkFillEndDate}
-                        onClick={() => {
-                          setMonthResetConfirmation("");
-                          setIsMonthResetOpen(true);
-                        }}
-                      >
-                        <Trash2Icon data-icon="inline-start" />
-                        Reset selected range
-                      </Button>
+                      {isManagerOrAbove ? (
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          disabled={isSaving || !bulkFillStartDate || !bulkFillEndDate}
+                          onClick={() => {
+                            setMonthResetConfirmation("");
+                            setIsMonthResetOpen(true);
+                          }}
+                        >
+                          <Trash2Icon data-icon="inline-start" />
+                          Reset selected range
+                        </Button>
+                      ) : null}
                     </div>
                   </CardContent>
                 </Card>
@@ -4121,6 +4320,7 @@ export function MemberManager({
                         <div className="relative">
                           <ServiceCalendar
                             activeStatus={serviceForm.serviceLabel}
+                            authAlertDates={authAlertDatesForMemberMonth}
                             claimStatusByDate={claimStatusByDateForMemberMonth}
                             month={calendarMonth}
                             days={calendarDays}
@@ -4333,26 +4533,30 @@ export function MemberManager({
                       Latest service entries from the shared log.
                     </CardDescription>
                     <CardAction className="flex flex-wrap justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={isSaving || weekendServiceEntries.length === 0}
-                        onClick={() => setIsCleanseWeekendsOpen(true)}
-                      >
-                        <Trash2Icon data-icon="inline-start" />
-                        Cleanse weekends ({weekendServiceEntries.length})
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        disabled={isSaving || selectedServiceEntries.length === 0}
-                        onClick={() => setIsBulkServiceDeleteOpen(true)}
-                      >
-                        <Trash2Icon data-icon="inline-start" />
-                        Delete selected ({selectedServiceEntries.length})
-                      </Button>
+                      {isManagerOrAbove ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={isSaving || weekendServiceEntries.length === 0}
+                          onClick={() => setIsCleanseWeekendsOpen(true)}
+                        >
+                          <Trash2Icon data-icon="inline-start" />
+                          Cleanse weekends ({weekendServiceEntries.length})
+                        </Button>
+                      ) : null}
+                      {isManagerOrAbove ? (
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={isSaving || selectedServiceEntries.length === 0}
+                          onClick={() => setIsBulkServiceDeleteOpen(true)}
+                        >
+                          <Trash2Icon data-icon="inline-start" />
+                          Delete selected ({selectedServiceEntries.length})
+                        </Button>
+                      ) : null}
                       <Select
                         value={String(servicePageSize)}
                         onValueChange={(value) => {
@@ -4464,15 +4668,17 @@ export function MemberManager({
                                 </TableCell>
                                 <TableCell>
                                   <div className="flex justify-end">
-                                    <Button
-                                      type="button"
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => setServiceDeleteTarget(entry)}
-                                    >
-                                      <Trash2Icon data-icon="inline-start" />
-                                      Delete
-                                    </Button>
+                                    {isManagerOrAbove ? (
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => setServiceDeleteTarget(entry)}
+                                      >
+                                        <Trash2Icon data-icon="inline-start" />
+                                        Delete
+                                      </Button>
+                                    ) : null}
                                   </div>
                                 </TableCell>
                               </TableRow>
@@ -4791,15 +4997,17 @@ export function MemberManager({
                                         Discontinue
                                       </Button>
                                     )}
-                                    <Button
-                                      type="button"
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => setDeleteTarget(member)}
-                                    >
-                                      <Trash2Icon data-icon="inline-start" />
-                                      Delete
-                                    </Button>
+                                    {isSuperAdmin ? (
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => setDeleteTarget(member)}
+                                      >
+                                        <Trash2Icon data-icon="inline-start" />
+                                        Delete
+                                      </Button>
+                                    ) : null}
                                   </div>
                                 </TableCell>
                               </TableRow>
@@ -5873,6 +6081,17 @@ function storeDismissedSecurityEventId(eventId: string) {
 function getLockoutMessage(lockedUntil: number) {
   const minutesLeft = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 60000));
   return `Too many failed sign-in attempts. Login is locked for ${minutesLeft} minutes.`;
+}
+
+// Supabase's own error text for a failed hCaptcha check ("captcha
+// verification process failed") is raw internal wording, not something to
+// show a user directly -- swap it for a clean, actionable message. Every
+// other sign-in error (wrong password, etc.) already reads fine as-is.
+function getSignInErrorMessage(error: { message: string }) {
+  if (error.message.toLowerCase().includes("captcha")) {
+    return "Captcha verification failed. Please try the captcha again.";
+  }
+  return error.message;
 }
 
 function formatSecurityEventDate(value: string) {

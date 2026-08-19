@@ -1,14 +1,54 @@
 import type { Member } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 
-export type HoldEndingAlert = {
+export type NotificationSeverity = "critical" | "warning" | "info";
+
+export type NotificationResolution = {
+  kind: "extend-status";
   memberId: string;
-  memberName: string;
-  lastHoldDate: string;
-  daysUntilEnd: number; // negative means the last recorded Hold day has already passed
+  statusLabel: string;
+  lastStatusDate: string;
 };
 
-const HOLD_ENDING_WINDOW_DAYS = 3;
+/**
+ * Generic shape the notification bell renders, grouped by `category`.
+ * Detection logic for each alert source (findStatusEndingSoon today, more
+ * later -- e.g. messages, notes, update warnings) stays in its own
+ * domain-specific type/function -- these adapter functions are what map a
+ * source's own alerts into this common shape, so new sources plug into the
+ * bell without it needing to know their details. `resolution` is optional
+ * and only set by sources that offer an inline fix (currently just
+ * status-ending alerts, which can be extended by N weeks); sources without
+ * one just render as plain informational rows.
+ */
+export type NotificationItem = {
+  id: string;
+  category: string;
+  title: string;
+  description: string;
+  severity: NotificationSeverity;
+  memberId?: string;
+  resolution?: NotificationResolution;
+};
+
+const statusDisplayLabels: Record<string, string> = {
+  hold: "Hold",
+  medical: "Medical",
+  vacation: "Vacation",
+};
+
+const trackedEndingStatuses = new Set(Object.keys(statusDisplayLabels));
+
+export type StatusEndingAlert = {
+  memberId: string;
+  memberName: string;
+  statusLabel: string;
+  lastStatusDate: string;
+  daysUntilEnd: number; // negative means the last recorded day has already passed
+};
+
+const STATUS_ENDING_LOOKAHEAD_DAYS = 3;
+const STATUS_ENDED_LOOKBACK_DAYS = 7;
 
 function daysBetween(fromDate: string, toDate: string): number {
   const from = new Date(`${fromDate}T00:00:00`);
@@ -17,18 +57,21 @@ function daysBetween(fromDate: string, toDate: string): number {
 }
 
 /**
- * Members whose most recently recorded service entry is a Hold day landing
- * within a few days of today. There's no explicit "hold end date" field --
- * this infers "ending soon" from the fact that nothing has been recorded
- * past that Hold day, so a gap (Missing days) is about to open up on the
- * calendar unless staff extend the hold or resume attendance.
+ * Members whose most recently recorded service entry is a Hold/Medical/
+ * Vacation day landing near today -- up to a few days out if it hasn't
+ * happened yet, or up to a week back if it already has. There's no explicit
+ * "end date" field for these statuses -- this infers "ending soon"/"ended"
+ * from the fact that nothing has been recorded past that day, so a gap
+ * (Missing days) is about to open up on the calendar (or already has) unless
+ * staff extend the status or resume attendance.
  */
-export function findHoldsEndingSoon(
+export function findStatusEndingSoon(
   members: Member[],
   serviceEntries: ServiceEntry[],
   today: string,
-  windowDays: number = HOLD_ENDING_WINDOW_DAYS
-): HoldEndingAlert[] {
+  lookaheadDays: number = STATUS_ENDING_LOOKAHEAD_DAYS,
+  lookbackDays: number = STATUS_ENDED_LOOKBACK_DAYS
+): StatusEndingAlert[] {
   const activeMemberById = new Map(
     members.filter((member) => !member.archivedAt).map((member) => [member.id, member])
   );
@@ -44,23 +87,65 @@ export function findHoldsEndingSoon(
     }
   }
 
-  const alerts: HoldEndingAlert[] = [];
+  const alerts: StatusEndingAlert[] = [];
   for (const [memberId, entry] of latestEntryByMember) {
-    if (entry.serviceLabel.toLowerCase() !== "hold") {
+    const statusLabel = entry.serviceLabel.toLowerCase();
+    if (!trackedEndingStatuses.has(statusLabel)) {
       continue;
     }
     const daysUntilEnd = daysBetween(today, entry.serviceDate);
-    if (daysUntilEnd < -windowDays || daysUntilEnd > windowDays) {
+    if (daysUntilEnd < -lookbackDays || daysUntilEnd > lookaheadDays) {
       continue;
     }
     const member = activeMemberById.get(memberId);
     alerts.push({
       memberId,
       memberName: member?.displayName ?? "Unknown member",
-      lastHoldDate: entry.serviceDate,
+      statusLabel,
+      lastStatusDate: entry.serviceDate,
       daysUntilEnd,
     });
   }
 
   return alerts.sort((left, right) => left.daysUntilEnd - right.daysUntilEnd);
+}
+
+function formatShortDate(dateString: string): string {
+  return new Date(`${dateString}T00:00:00`).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function statusEndingDescription(alert: StatusEndingAlert): string {
+  const label = statusDisplayLabels[alert.statusLabel] ?? alert.statusLabel;
+  if (alert.daysUntilEnd > 0) {
+    return `${label} ends in ${alert.daysUntilEnd}d (${formatShortDate(alert.lastStatusDate)})`;
+  }
+  if (alert.daysUntilEnd === 0) {
+    return `${label} ends today (${formatShortDate(alert.lastStatusDate)})`;
+  }
+  return `${label} ended ${Math.abs(alert.daysUntilEnd)}d ago (${formatShortDate(alert.lastStatusDate)})`;
+}
+
+export function statusEndingAlertsToNotifications(
+  alerts: StatusEndingAlert[]
+): NotificationItem[] {
+  return alerts.map((alert) => {
+    const label = statusDisplayLabels[alert.statusLabel] ?? alert.statusLabel;
+    return {
+      id: `status-ending:${alert.statusLabel}:${alert.memberId}`,
+      category: `${label} ending soon`,
+      title: alert.memberName,
+      description: statusEndingDescription(alert),
+      severity: alert.daysUntilEnd <= 0 ? "critical" : "warning",
+      memberId: alert.memberId,
+      resolution: {
+        kind: "extend-status",
+        memberId: alert.memberId,
+        statusLabel: alert.statusLabel,
+        lastStatusDate: alert.lastStatusDate,
+      },
+    };
+  });
 }

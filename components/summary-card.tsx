@@ -145,6 +145,11 @@ export function SummaryCard({
     try {
       const raw = window.localStorage.getItem(summaryWidgetStorageKey);
       if (raw) {
+        // Deliberately in an effect, not a lazy useState initializer:
+        // localStorage isn't available during SSR/first hydration pass, so
+        // reading it here (post-mount) instead of during render is what
+        // avoids a hydration mismatch, not what causes one.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setWidgetVisibility((current) => ({ ...current, ...JSON.parse(raw) }));
       }
     } catch {

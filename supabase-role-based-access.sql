@@ -110,6 +110,7 @@ drop policy if exists "App users can read claims" on public.claims;
 drop policy if exists "App users can add claims" on public.claims;
 drop policy if exists "App users can update claims" on public.claims;
 drop policy if exists "Super admins can delete claims" on public.claims;
+drop policy if exists "Managers can delete claims" on public.claims;
 
 create policy "App users can read claims"
 on public.claims
@@ -130,11 +131,11 @@ to authenticated
 using (public.is_app_user())
 with check (public.is_app_user());
 
-create policy "Super admins can delete claims"
+create policy "Managers can delete claims"
 on public.claims
 for delete
 to authenticated
-using (public.is_super_admin());
+using (public.is_manager());
 
 -- service_entries
 drop policy if exists "Logged in users can read service entries" on public.service_entries;
@@ -145,6 +146,7 @@ drop policy if exists "App users can read service entries" on public.service_ent
 drop policy if exists "App users can add service entries" on public.service_entries;
 drop policy if exists "App users can update service entries" on public.service_entries;
 drop policy if exists "Super admins can delete service entries" on public.service_entries;
+drop policy if exists "Managers can delete service entries" on public.service_entries;
 
 create policy "App users can read service entries"
 on public.service_entries
@@ -165,11 +167,11 @@ to authenticated
 using (public.is_app_user())
 with check (public.is_app_user());
 
-create policy "Super admins can delete service entries"
+create policy "Managers can delete service entries"
 on public.service_entries
 for delete
 to authenticated
-using (public.is_super_admin());
+using (public.is_manager());
 
 -- audit_events: keep the actor-scoped insert policy (every app user's
 -- actions should still be logged), tighten select to super_admin only. The

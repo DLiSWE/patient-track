@@ -137,6 +137,7 @@ type ClaimReviewItem = {
 export function ClaimsDashboard({
   claims,
   isLoading = false,
+  isManagerOrAbove = false,
   memberById,
   members,
   month,
@@ -148,6 +149,7 @@ export function ClaimsDashboard({
 }: {
   claims: Claim[];
   isLoading?: boolean;
+  isManagerOrAbove?: boolean;
   memberById: Map<string, Member>;
   members: Member[];
   month: string;
@@ -1109,7 +1111,7 @@ export function ClaimsDashboard({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <StatCard label="Total" value={stats.Total ?? 0} />
         {claimStatusOptions.map((status) => (
           <StatCard
@@ -1402,20 +1404,22 @@ export function ClaimsDashboard({
                               />
                               {isExpanded ? "Hide dates" : "View dates"}
                             </Button>
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="sm"
-                              onClick={() =>
-                                setDeleteMemberTarget({
-                                  memberId: group.memberId,
-                                  memberName: group.member?.displayName ?? "this member",
-                                })
-                              }
-                            >
-                              <Trash2Icon data-icon="inline-start" />
-                              Delete all
-                            </Button>
+                            {isManagerOrAbove ? (
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  setDeleteMemberTarget({
+                                    memberId: group.memberId,
+                                    memberName: group.member?.displayName ?? "this member",
+                                  })
+                                }
+                              >
+                                <Trash2Icon data-icon="inline-start" />
+                                Delete all
+                              </Button>
+                            ) : null}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -1467,15 +1471,17 @@ export function ClaimsDashboard({
                                         <PencilIcon data-icon="inline-start" />
                                         Edit
                                       </Button>
-                                      <Button
-                                        type="button"
-                                        variant="destructive"
-                                        size="sm"
-                                        onClick={() => setDeleteTarget(claim)}
-                                      >
-                                        <Trash2Icon data-icon="inline-start" />
-                                        Delete
-                                      </Button>
+                                      {isManagerOrAbove ? (
+                                        <Button
+                                          type="button"
+                                          variant="destructive"
+                                          size="sm"
+                                          onClick={() => setDeleteTarget(claim)}
+                                        >
+                                          <Trash2Icon data-icon="inline-start" />
+                                          Delete
+                                        </Button>
+                                      ) : null}
                                     </div>
                                   </div>
                                 ))}

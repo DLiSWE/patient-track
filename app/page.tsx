@@ -261,6 +261,11 @@ export default function HomePage() {
     try {
       const raw = window.localStorage.getItem(landingWidgetStorageKey);
       if (raw) {
+        // Deliberately in an effect, not a lazy useState initializer:
+        // localStorage isn't available during SSR/first hydration pass, so
+        // reading it here (post-mount) instead of during render is what
+        // avoids a hydration mismatch, not what causes one.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setWidgetVisibility((current) => ({ ...current, ...JSON.parse(raw) }));
       }
     } catch {
@@ -313,6 +318,11 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hasSupabaseConfig || !supabase) {
+      // Early-exit branch of the session-check effect below (which does its
+      // real setState work inside supabase.auth.getSession().then(...), an
+      // async callback the rule doesn't flag) -- this is the "config is
+      // missing, there's nothing to check" case, not a derivable render value.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsCheckingSession(false);
       return;
     }
@@ -403,7 +413,7 @@ export default function HomePage() {
       const [membersResult, servicesResult, claimsResult] = await Promise.all([
         supabaseClient
           .from("members")
-          .select("id, display_name, provider, service_days, created_at, updated_at, archived_at")
+          .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
           .order("display_name", { ascending: true }),
         fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end),
         fetchClaimsInRange(supabaseClient, monthRange.start, monthRange.end),
@@ -453,8 +463,10 @@ export default function HomePage() {
         counts.required += 1;
       } else if (status === "validated") {
         counts.accepted += 1;
-      } else {
+      } else if (status !== "failed") {
         // "Created" (and any other non-terminal status) is awaiting validation.
+        // "Failed" is deliberately excluded -- it's already counted below and
+        // isn't "awaiting validation" in the normal sense.
         counts.pending += 1;
       }
 
@@ -515,6 +527,9 @@ export default function HomePage() {
     try {
       const raw = window.localStorage.getItem(attendanceGridExpandedStorageKey);
       if (raw != null) {
+        // Same hydration-safety reasoning as the widget-visibility effect
+        // above: localStorage read has to happen post-mount.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setIsAttendanceGridExpanded(raw === "true");
       }
     } catch {

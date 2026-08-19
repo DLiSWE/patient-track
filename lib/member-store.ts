@@ -6,11 +6,14 @@ export type Member = {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  // Furthest date the member's currently-known authorizations cover, written
+  // by the claims-v2 bot's `sync-auths` command. Not editable from this app.
+  authExpiresOn: string | null;
 };
 
 export type MemberFormValues = Omit<
   Member,
-  "id" | "createdAt" | "updatedAt" | "archivedAt"
+  "id" | "createdAt" | "updatedAt" | "archivedAt" | "authExpiresOn"
 >;
 
 export const emptyMemberForm: MemberFormValues = {
@@ -34,6 +37,7 @@ export type MemberRow = {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  auth_expires_on: string | null;
 };
 
 const serviceDayTokens = [
@@ -55,6 +59,7 @@ export function mapMemberRow(row: MemberRow): Member {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
+    authExpiresOn: row.auth_expires_on,
   };
 }
 

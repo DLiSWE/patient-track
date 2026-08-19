@@ -4,30 +4,34 @@ All notable changes to the Sophia Members web app should be recorded here.
 
 ## [Unreleased]
 
-- Added hCaptcha bot protection to the sign-in form and the delete-member confirmation dialog, gated behind `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` so it stays a no-op until that's configured; widget is centered in both spots.
-- Security: extended the CSP to allow hCaptcha's script, iframe, and verification calls (`script-src`, `style-src`, `connect-src`, and a new `frame-src`, which didn't exist before and was blocking all iframes by falling back to `default-src 'self'`) so the widget above isn't silently blocked in production.
-- Security: revoked the default PUBLIC execute grant on `is_app_user()` and `is_super_admin()` (SECURITY DEFINER functions used throughout RLS), since every policy that calls them already runs `to authenticated` and anon never needed direct execute access. Flagged by the Supabase Security Advisor as "Public Can Execute SECURITY DEFINER Function"; requires re-running `supabase-app-profiles.sql` and `supabase-role-based-access.sql` against the database for the grant change to take effect.
-- Added an Attendance grid to the Summary tab showing every active member's daily status for the month, with member search.
-- Added a Customize control to the Summary tab for showing/hiding its cards (claim status, attendance grid, calendar), saved per browser.
-- Added On hold / Medical / Vacation status cards to the Members tab, driven by each member's most recently recorded service, with a configurable page size.
-- Removed the older Member status snapshot card, superseded by the cards above.
-- Added a Customize control to the Members tab for showing/hiding its cards (status cards, Directory, Add member, New & updated members, Discontinued members), saved per browser.
-- Added a Home link to the top of the sidebar nav for jumping back to `/` from any tab.
-- Added a date filter to the Claims tab alongside the existing member search and status filter.
-- Added a "Delete all" action per member on the Claims tab to clear their full claim history (not just the loaded month), with a confirmation dialog.
-- Disabled Saturdays and Sundays in the interactive service calendar and excluded them from every expected-service-date calculation app-wide, since the business no longer operates those days.
-- Added a "Cleanse weekends" tool to bulk-remove stray weekend service entries already on file.
-- Added an opt-in checkbox on Service Calendar save to also delete claims for dates changed off Attended even if the claim already went to the payer; previously only Required/Pending claims were auto-removed.
-- Replaced "Reset month" with "Reset selected range" on the Service Calendar, reusing the Bulk Fill date range instead of always wiping the whole calendar month, with cross-month-safe refresh.
-- Replaced the flat attendance badge list on the member profile page with a color-coded month calendar, matching the status colors used elsewhere in the app.
-- Rebuilt the landing page (`/`) to pull live Supabase data (members, service entries, claims) with a shared month selector (prev/next and jump), instead of a static page.
-- Added selectable, reorderable widgets to the landing page: claim status counts, On hold/Medical/Vacation, a day-by-day monthly overview, an attendance grid, the K-pop chart, and the GGBae counter, each saved per browser via a Customize control.
-- Added pagination (with configurable page size and first/±5/±1/last navigation), an expand-to-full-height toggle, a member search box with a status filter, and a per-day claim-status indicator (corner dot for claim status, red ring when a claim still needs to be created) to the landing page's attendance grid.
-- Fixed the shared ScrollArea component, which was missing the CSS and structural `Content` wrapper needed to actually clip and scroll its content.
-- Removed the Claimed, Pending, Accepted, and Failed claim statuses from the Claims tab (status options, stat cards, filters, badges), along with the "Reset failed claims" retry action, "Last failure" alert, and failed-claim review item that were built around them, since none of them were being tracked; Required, Created, and (see below) Validated are the only statuses left.
-- Renamed the "Submitted" claim status to "Validated", intended to be set by the bot's new Validate feature once it confirms a claim cleared on the payer portal.
-- Fixed the claims-tab stat card row, which was still sized for 7 cards after the status cleanup above and left a large empty gap; it now fits the remaining 4 evenly.
-- Fixed a Postgres "date/time field value out of range" error caused by a malformed month value (e.g. Firefox's `<input type="month">` allowing the spinner to underflow past January to "00") reaching a Supabase date-range query; month values are now validated/normalized both where they're set and where they're turned into dates.
+## [2.3.0] - 2026-08-19
+
+- Security: added hCaptcha bot protection to sign-in and delete-member confirmation, guarded by `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` so local/dev installs keep working without it.
+- Security: expanded the CSP for hCaptcha scripts, styles, frames, and verification calls, including `frame-src` so the widget is not blocked by the app's default same-origin policy.
+- Security: revoked the default PUBLIC execute grant on `is_app_user()` and `is_super_admin()`, matching Supabase Security Advisor guidance for SECURITY DEFINER functions. Re-run `supabase-app-profiles.sql` and `supabase-role-based-access.sql` for this to take effect in the database.
+- Security: added an `is_manager()` role helper and aligned delete permissions across UI and RLS. Managers and super admins can delete claims/service entries; only super admins can hard-delete members.
+- Fixed role-gated actions being visible to users who could not actually run them under RLS, including claim deletes, service-entry deletes, member delete, and the Audit view.
+- Added `members.auth_expires_on`, a single coverage-expiration date written by the claims-v2 `sync-auths` command and read by the Service Calendar. The calendar now marks service days past that date as needing authorization attention.
+- Added migration support for correcting `claims.status`'s database default from the removed `Pending` value to `Required`.
+- Standardized the Claims tab around the current claim lifecycle: `Required`, `Created`, `Failed`, and `Validated`.
+- Added `Failed` back to Claims filters, badges, colors, and stat cards so failed bot runs are visible instead of blending into normal Required claims.
+- Fixed claim status counts so Failed claims no longer inflate the pending/in-progress bucket.
+- Added a date filter to the Claims tab and a per-member "Delete all" action for clearing full claim history, with confirmation.
+- Added per-day claim indicators to the landing-page attendance grid, including a red-ring state when a service day still needs a claim created.
+- Rebuilt the post-login homepage around live Supabase data, with shared month navigation and selectable widgets for claim counts, hold/medical/vacation, monthly overview, attendance, K-pop, and the GGBae counter.
+- Added reorderable and hideable homepage widgets, saved per browser.
+- Added Summary-tab customization and an active-member attendance grid with member search.
+- Added Members-tab status cards for On hold, Medical, and Vacation members, plus per-browser customization for visible cards.
+- Removed the older Member status snapshot card after replacing it with the more focused status-card sections.
+- Disabled Saturdays and Sundays in the service calendar and excluded weekends from expected-service-date calculations app-wide.
+- Added a "Cleanse weekends" tool to remove stray weekend service entries already saved.
+- Replaced "Reset month" with "Reset selected range", using the Bulk Fill date range and refreshing safely across month boundaries.
+- Added an opt-in Service Calendar save option to delete claims for dates changed off Attended, even if a claim was already created.
+- Replaced the flat member-profile attendance badge list with a color-coded month calendar using the same status colors as the rest of the app.
+- Fixed the shared ScrollArea component so wrapped content actually clips and scrolls.
+- Fixed Firefox month/date picker problems by validating month values and using date inputs where Firefox does not support `input type="month"`.
+- Fixed Firefox dialog date pickers by replacing transform-based centering with flexbox centering.
+- Cleaned up `eslint .` to pass with zero problems.
 
 ## [2.2.0] - 2026-08-14
 

@@ -86,6 +86,7 @@ const calendarLegend = [
 
 export function ServiceCalendar({
   activeStatus = "Attended",
+  authAlertDates,
   claimStatusByDate,
   days,
   expectedDates,
@@ -103,6 +104,10 @@ export function ServiceCalendar({
   unavailableDates,
 }: {
   activeStatus?: string;
+  // Dates where the member's authorization has lapsed and a new one is
+  // needed -- deliberately separate from service status (a day can be
+  // Attended and still need a new auth at the same time).
+  authAlertDates?: Set<string>;
   claimStatusByDate?: Map<string, string>;
   days: Array<CalendarDay | null>;
   expectedDates: string[];
@@ -196,6 +201,14 @@ export function ServiceCalendar({
         </div>
       </div>
 
+      <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+        <span className="relative flex size-2.5 shrink-0">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-500 opacity-75" />
+          <span className="relative inline-flex size-2.5 rounded-full bg-red-600" />
+        </span>
+        Auth needs updating (throbbing dot, top-left of day)
+      </div>
+
       <div className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
         <span className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", activeStatusStyle.dot)} />
         <span>
@@ -234,36 +247,39 @@ export function ServiceCalendar({
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const claimStatus = claimStatusByDate?.get(day.date) ?? null;
+          const hasAuthAlert = Boolean(authAlertDates?.has(day.date));
           const willChangeStatus =
             !isRecorded || recordedStatus.toLowerCase() !== activeStatus.toLowerCase();
           const shouldChangeStatus =
             isRecorded && Boolean(onStatusClick) && (isPending || willChangeStatus);
           const isClickPreviewable = shouldChangeStatus || !isRecorded;
+          const baseTitle = isPending
+            ? `Staged as ${recordedStatus} — click to change, or Save to apply`
+            : isWeekendClosed
+              ? "Closed on weekends"
+            : isUnavailable
+              ? "Unavailable after discontinued date"
+            : isNew
+              ? newStatus.toLowerCase() === activeStatus.toLowerCase()
+                ? `Staged as ${newStatus} — click to cancel`
+                : `Staged as ${newStatus} — click to change to ${activeStatus}`
+              : shouldChangeStatus
+                ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
+                : isRecorded
+                  ? `${recordedStatus} - click to remove (needs Save)`
+                : !isRecorded
+                  ? `Click to queue as ${activeStatus} (needs Save)`
+                  : undefined;
+          const dayTitle = hasAuthAlert
+            ? [baseTitle, "Auth needs updating"].filter(Boolean).join(" — ")
+            : baseTitle;
 
           return (
             <button
               key={day.date}
               type="button"
               aria-pressed={isSelected}
-              title={
-                isPending
-                  ? `Staged as ${recordedStatus} — click to change, or Save to apply`
-                  : isWeekendClosed
-                    ? "Closed on weekends"
-                  : isUnavailable
-                    ? "Unavailable after discontinued date"
-                  : isNew
-                    ? newStatus.toLowerCase() === activeStatus.toLowerCase()
-                      ? `Staged as ${newStatus} — click to cancel`
-                      : `Staged as ${newStatus} — click to change to ${activeStatus}`
-                    : shouldChangeStatus
-                      ? `${recordedStatus} — click to stage ${activeStatus} (needs Save)`
-                      : isRecorded
-                        ? `${recordedStatus} - click to remove (needs Save)`
-                      : !isRecorded
-                        ? `Click to queue as ${activeStatus} (needs Save)`
-                        : undefined
-              }
+              title={dayTitle}
               className={cn(
                 "relative flex size-10 flex-col items-center justify-center gap-0 rounded-none border border-border text-sm font-medium transition-colors sm:size-14 sm:gap-0.5 sm:rounded-md sm:text-base",
                 "bg-background hover:bg-muted",
@@ -293,6 +309,15 @@ export function ServiceCalendar({
                   )}
                   aria-hidden="true"
                 />
+              ) : null}
+              {hasAuthAlert ? (
+                <span
+                  className="absolute left-1 top-1 flex size-2.5 sm:left-1.5 sm:top-1.5 sm:size-3"
+                  aria-hidden="true"
+                >
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-500 opacity-75" />
+                  <span className="relative inline-flex size-2.5 rounded-full bg-red-600 ring-2 ring-background sm:size-3" />
+                </span>
               ) : null}
               <span>{day.dayNumber}</span>
               {isSaved && (recordedStatus.toLowerCase() !== "attended" || isPending) ? (

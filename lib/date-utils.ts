@@ -201,6 +201,13 @@ export function getExpectedServiceDatesInRange(
   return dates;
 }
 
+export function addDaysToDateString(dateString: string, days: number): string {
+  const date = parseDateString(dateString);
+  return formatDateString(
+    new Date(date.getFullYear(), date.getMonth(), date.getDate() + days)
+  );
+}
+
 export function getExpectedMembersByDate(
   month: string,
   members: Member[],
