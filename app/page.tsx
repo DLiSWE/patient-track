@@ -792,7 +792,7 @@ export default function HomePage() {
 
           {widgetVisibility.claimStatus ? (
             <div
-              className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+              className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4"
               style={{ order: widgetOrder.indexOf("claimStatus") }}
             >
               <LandingStat
@@ -832,7 +832,7 @@ export default function HomePage() {
 
           {widgetVisibility.memberStatus ? (
             <div
-              className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3"
+              className="grid min-w-0 gap-5 sm:grid-cols-2 xl:grid-cols-3"
               style={{ order: widgetOrder.indexOf("memberStatus") }}
             >
               <NewMembersCard
@@ -879,7 +879,7 @@ export default function HomePage() {
 
           {widgetVisibility.monthlyOverview ? (
             <div
-              className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+              className="min-w-0 rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]"
               style={{ order: widgetOrder.indexOf("monthlyOverview") }}
             >
               <div className="mb-3">
@@ -938,7 +938,7 @@ export default function HomePage() {
 
           {widgetVisibility.attendanceGrid ? (
             <div
-              className="flex flex-col gap-3 rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+              className="flex min-w-0 flex-col gap-3 rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]"
               style={{ order: widgetOrder.indexOf("attendanceGrid") }}
             >
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1255,7 +1255,7 @@ export default function HomePage() {
 
           {widgetVisibility.topSongs ? (
             <div
-              className="grid gap-4 md:grid-cols-2 xl:grid-cols-5"
+              className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-5"
               style={{ order: widgetOrder.indexOf("topSongs") }}
             >
               {topSongs.map((song) => (
