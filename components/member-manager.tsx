@@ -3629,7 +3629,7 @@ export function MemberManager({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="mt-3 h-8 border-amber-300/35 bg-transparent text-amber-50 hover:bg-amber-300/15"
+                  className="col-start-2 mt-3 h-8 border-amber-300/35 bg-transparent text-amber-50 hover:bg-amber-300/15"
                   onClick={acknowledgeSecurityEvent}
                 >
                   Acknowledge
