@@ -31,7 +31,55 @@ The app now has:
 
 - `/` for the post-login internal homepage
 - `/workspace` for the full member-management workspace
+- `/tools` for operational checks and shortcuts
 - `/login` for direct sign-in
+
+## Operator workflow
+
+### Home
+
+The post-login home page is a quick monthly snapshot. It shows configurable widgets for claim status, member status, monthly attendance, the attendance grid, and small internal extras. Use the month selector at the top to move the whole page between months.
+
+### Workspace
+
+The workspace is the main operating surface. The left sidebar opens:
+
+- `Members`: member directory, member add/edit form, discontinued members, and recently changed members.
+- `Services`: service calendar, bulk-fill attendance, recent service entries, weekend cleanup, and service-entry deletion tools for allowed roles.
+- `Claims`: claim generation, claim review, provider batches, claim rows, claim editing, and claim exports.
+- `Summary`: monthly service totals, attendance grid, expected-member views, and configurable summary widgets.
+- `Audit`: security/admin event review for super admins.
+- `Admin`: app-user role and presence management for super admins.
+
+Internal shortcuts can open a workspace section directly with `/workspace?view=services`, `/workspace?view=claims`, `/workspace?view=summary`, and the other sidebar view names.
+
+### Tools
+
+The Tools page collects cross-checks that are useful before or after claim work.
+
+The month selector uses the same `< Month Year >` pattern as the rest of the app. Changing the month refreshes all tools on the page.
+
+`Required claims by month` shows claim rows still in `Required`, which means they have not been initialized by the claim bot yet.
+
+- `Warning signs`: checks for operational mismatches in the selected month.
+- `Attended, no claim`: an attended service entry exists but no claim row exists for the same member and date.
+- `Claim, no attended service`: a claim row exists but there is no matching attended service entry for the same member and date.
+- `Authorization gap`: an attended service date is after the member's `auth_expires_on` date.
+- `Creation batches`: groups `Required` claims by provider and service date, matching how claim creation work is usually handled.
+- `Member detail`: shows the same `Required` work grouped by member for follow-up.
+
+### Claim Exports
+
+The Claims page has several CSV exports:
+
+- `Queue`: attended service dates that are ready to have required claims generated for the selected month.
+- `Claims`: claim status rows for the selected month.
+- `Attendance`: service-entry rows for the selected month.
+- `All claims CSV`: full claim history across all months.
+
+### Reset failed claims
+
+Managers and super admins see a `Reset failed` button on the Claims page. It flips every claim currently marked `Failed` back to `Required` and clears its recorded failure reason, so a failed bot run can be re-queued in one step. The action spans all failed claims in the database, not just the selected month, and asks for confirmation first.
 
 ## Environment
 

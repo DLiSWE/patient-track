@@ -39,6 +39,7 @@ import {
   ShieldCheckIcon,
   Trash2Icon,
   UsersIcon,
+  WrenchIcon,
   XIcon,
 } from "lucide-react";
 
@@ -171,7 +172,14 @@ type AuthForm = {
   password: string;
 };
 
-type ActiveView = "members" | "services" | "claims" | "summary" | "audit" | "admin" | "member";
+export type ActiveView =
+  | "members"
+  | "services"
+  | "claims"
+  | "summary"
+  | "audit"
+  | "admin"
+  | "member";
 type DirectorySortField = "displayName" | "provider" | "updatedAt";
 type SortDirection = "asc" | "desc";
 
@@ -582,11 +590,6 @@ export function MemberManager({
     safeDirectoryPage * directoryPageSize + directoryPageSize
   );
 
-  const providerCount = useMemo(
-    () => new Set(activeMembers.map((member) => member.provider).filter(Boolean)).size,
-    [activeMembers]
-  );
-
   const membersJoinedThisMonth = useMemo(
     () =>
       [...activeMembers]
@@ -701,10 +704,6 @@ export function MemberManager({
     );
   }, [members, serviceMemberQuery]);
 
-  const todayServiceCount = useMemo(() => {
-    const today = new Date().toLocaleDateString("en-CA");
-    return serviceEntries.filter((entry) => entry.serviceDate === today).length;
-  }, [serviceEntries]);
   const serviceEntriesForCalendarMonth = useMemo(
     () =>
       serviceEntries.filter((entry) => entry.serviceDate.startsWith(`${calendarMonth}-`)),
@@ -3847,6 +3846,18 @@ export function MemberManager({
               <Button
                 type="button"
                 variant="ghost"
+                className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                onClick={() => {
+                  setIsMobileNavOpen(false);
+                  router.push("/tools");
+                }}
+              >
+                <WrenchIcon data-icon="inline-start" />
+                Tools
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
                 className={cn(
                   "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   activeView === "members" &&
@@ -3953,8 +3964,6 @@ export function MemberManager({
 
             <div className="mt-auto flex flex-col gap-3">
               <Metric label="Members" value={activeMembers.length} />
-              <Metric label="Providers" value={providerCount} />
-              <Metric label="Today" value={todayServiceCount} />
               <ThemeToggle className="border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground" />
               <Button
                 variant="outline"

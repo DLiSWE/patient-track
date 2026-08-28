@@ -4,6 +4,16 @@ All notable changes to the Sophia Members web app should be recorded here.
 
 ## [Unreleased]
 
+- Simplified the workspace sidebar by removing the Providers and Today count cards, leaving the active member total plus navigation and account actions.
+- Added a dedicated `/tools` page with quick links into Services, Claims, and Summary, and wired the workspace sidebar to open it.
+- Added `?view=` support on `/workspace` so internal shortcuts can open the right section directly.
+- Added the first live Tools-page utility: a two-date required-claims lookup that groups still-uninitialized (`Required`) claim work by member and service date.
+- Added a creation-batch view to the required-claims tool, grouping pending services by provider and service date before the member-level detail table.
+- Added an All claims CSV export button to the Claims page for downloading full claim history, not just the selected month.
+- Added a manager-only "Reset failed" action to the Claims page that flips every `Failed` claim back to `Required` and clears its failure reason, so failed bot runs can be re-queued without editing each claim by hand. Confirmation dialog notes the reset spans all failed claims, not just the selected month.
+- Added month-level warning signs to the Tools page for attended services without claims, claims without attended service, and authorization gaps.
+- Documented the app's operator workflow, Tools-page diagnostics, and Claims CSV export behavior in the README.
+
 ## [2.3.0] - 2026-08-19
 
 - Security: added hCaptcha bot protection to sign-in and delete-member confirmation, guarded by `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` so local/dev installs keep working without it.

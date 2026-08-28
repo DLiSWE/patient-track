@@ -19,6 +19,7 @@ Current version: `2.1.0`
 - `CHANGELOG.md`
 - `components/member-manager.tsx`
 - `components/service-calendar.tsx`
+- `app/tools/page.tsx`
 - `lib/supabase.ts`
 - `middleware.ts`
 - `next.config.ts`
@@ -37,6 +38,8 @@ Current version: `2.1.0`
 - `app_profiles` are app users; `members` are client/member records.
 - Member creation/editing should keep working for allowed users even under hardened policies.
 - Calendar, claims, and authorization UX are operational tools, so clarity matters more than novelty.
+- Tools-page warning checks are read-only diagnostics. They should explain operational mismatches without changing service or claim data.
+- Claims exports should preserve full operational context: member, provider, service date, status, attempts, failure notes, and timestamps.
 
 ## Documentation rule
 

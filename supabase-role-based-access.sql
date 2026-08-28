@@ -47,8 +47,13 @@ $$;
 
 -- SECURITY DEFINER functions get EXECUTE granted to PUBLIC by default in
 -- Postgres. Every policy that calls this runs `to authenticated`, so anon
--- never needs to call it directly -- narrow the grant accordingly.
+-- never needs to call it directly -- narrow the grant accordingly. Supabase
+-- projects also grant EXECUTE to anon directly (via ALTER DEFAULT PRIVILEGES
+-- on the public schema) at function-creation time -- that's a separate ACL
+-- entry from PUBLIC's, so it needs its own explicit revoke or it survives
+-- the revoke-from-public above untouched.
 revoke execute on function public.is_app_user() from public;
+revoke execute on function public.is_app_user() from anon;
 grant execute on function public.is_app_user() to authenticated;
 
 -- members: no supabase-members.sql exists in this repo (created via the

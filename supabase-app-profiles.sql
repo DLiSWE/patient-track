@@ -30,8 +30,13 @@ $$;
 
 -- SECURITY DEFINER functions get EXECUTE granted to PUBLIC by default in
 -- Postgres. Every policy that calls this runs `to authenticated`, so anon
--- never needs to call it directly -- narrow the grant accordingly.
+-- never needs to call it directly -- narrow the grant accordingly. Supabase
+-- projects also grant EXECUTE to anon directly (via ALTER DEFAULT PRIVILEGES
+-- on the public schema) at function-creation time -- that's a separate ACL
+-- entry from PUBLIC's, so it needs its own explicit revoke or it survives
+-- the revoke-from-public above untouched.
 revoke execute on function public.is_super_admin() from public;
+revoke execute on function public.is_super_admin() from anon;
 grant execute on function public.is_super_admin() to authenticated;
 
 -- Manager-tier check: manager or super_admin, matching the usual
@@ -52,11 +57,13 @@ as $$
 $$;
 
 revoke execute on function public.is_manager() from public;
+revoke execute on function public.is_manager() from anon;
 grant execute on function public.is_manager() to authenticated;
 
 create or replace function public.set_app_profiles_updated_at()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
   new.updated_at = now();

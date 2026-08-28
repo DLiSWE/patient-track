@@ -15,6 +15,7 @@ import {
   PencilIcon,
   PlayCircleIcon,
   PlusIcon,
+  RotateCcwIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import {
   claimStatusOptions,
   createEmptyClaimForm,
   defaultClaimStatus,
+  fetchAllClaims,
   fetchClaimsInRange,
   getClaimStatusStyle,
   mapClaimRow,
@@ -176,7 +178,9 @@ export function ClaimsDashboard({
     memberId: string;
     memberName: string;
   } | null>(null);
+  const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
   const [claimWeekDate, setClaimWeekDate] = useState(getTodayDate());
+  const [isExportingAllClaims, setIsExportingAllClaims] = useState(false);
 
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
 
@@ -742,6 +746,58 @@ export function ClaimsDashboard({
     setBusyMessage(null);
   }
 
+  async function confirmResetFailedClaims() {
+    if (!supabase) {
+      return;
+    }
+
+    setIsSaving(true);
+    setBusyMessage("Resetting failed claims to Required...");
+
+    const { data, error } = await supabase
+      .from("claims")
+      .update({
+        status: "Required",
+        last_failure_reason: null,
+        last_attempted_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("status", "Failed")
+      .select(
+        "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
+      );
+
+    if (error) {
+      toast.error(error.message);
+    } else {
+      const resetClaims = (data ?? []).map(mapClaimRow);
+      const resetCount = resetClaims.length;
+
+      if (resetCount === 0) {
+        toast.success("No failed claims to reset.");
+      } else {
+        const resetById = new Map(resetClaims.map((claim) => [claim.id, claim]));
+        updateClaims((currentClaims) =>
+          getCanonicalClaims(currentClaims.map((claim) => resetById.get(claim.id) ?? claim))
+        );
+        await onMonthDataRefresh?.(month);
+        await onAudit?.({
+          action: "claims_failed_reset",
+          entityType: "claim",
+          summary: `Reset ${resetCount} failed claim${resetCount === 1 ? "" : "s"} back to Required.`,
+          metadata: { count: resetCount },
+        });
+        toast.success(
+          `Reset ${resetCount} failed claim${resetCount === 1 ? "" : "s"} back to Required.`
+        );
+      }
+    }
+
+    setIsResetFailedOpen(false);
+    setIsSaving(false);
+    setBusyMessage(null);
+  }
+
   async function handleGenerateRequiredClaims(range: "week" | "monthToDate" | "month") {
     if (!supabase) {
       return;
@@ -894,19 +950,36 @@ export function ClaimsDashboard({
     const rows = canonicalClaims.map((claim) => {
       const member = memberById.get(claim.memberId);
 
-      return {
-        attempts: claim.attemptCount,
-        lastAttempted: claim.lastAttemptedAt ?? "",
-        lastFailure: claim.lastFailureReason ?? "",
-        member: member?.displayName ?? "Unknown member",
-        provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
-        serviceDate: claim.serviceDate,
-        status: claim.status,
-        submittedAt: claim.submittedAt ?? "",
-      };
+      return getClaimExportRow(claim, member);
     });
 
     downloadCsv(`claim-status-${month}.csv`, rows);
+  }
+
+  async function exportAllClaimsReport() {
+    if (!supabase) {
+      toast.error("Supabase is not configured.");
+      return;
+    }
+
+    setIsExportingAllClaims(true);
+
+    const result = await fetchAllClaims(supabase);
+
+    if (result.error) {
+      toast.error(`Could not export all claims: ${result.error.message}`);
+      setIsExportingAllClaims(false);
+      return;
+    }
+
+    const rows = result.data.map((claim) => {
+      const member = memberById.get(claim.memberId);
+
+      return getClaimExportRow(claim, member);
+    });
+
+    downloadCsv("all-claims.csv", rows);
+    setIsExportingAllClaims(false);
   }
 
   function exportClaimQueue() {
@@ -1259,7 +1332,33 @@ export function ClaimsDashboard({
         <CardHeader>
           <CardTitle>Claims</CardTitle>
           <CardDescription>Claim submission status per member and service day.</CardDescription>
-          <CardAction>
+          <CardAction className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void exportAllClaimsReport()}
+              disabled={isExportingAllClaims}
+            >
+              {isExportingAllClaims ? (
+                <Loader2Icon data-icon="inline-start" />
+              ) : (
+                <DownloadIcon data-icon="inline-start" />
+              )}
+              All claims CSV
+            </Button>
+            {isManagerOrAbove ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsResetFailedOpen(true)}
+                disabled={isSaving}
+              >
+                <RotateCcwIcon data-icon="inline-start" />
+                Reset failed
+              </Button>
+            ) : null}
             <Button type="button" size="sm" onClick={openAddDialog} disabled={members.length === 0}>
               <PlusIcon data-icon="inline-start" />
               Add claim
@@ -1696,6 +1795,25 @@ export function ClaimsDashboard({
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog open={isResetFailedOpen} onOpenChange={setIsResetFailedOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset all failed claims?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Every claim currently marked Failed is set back to Required so the bot can
+              retry it, and its recorded failure reason is cleared. This affects all failed
+              claims in the database, not just {formatMonthLabel(month)}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={confirmResetFailedClaims} disabled={isSaving}>
+              Reset failed claims
+            </AlertDialogAction>
+            <AlertDialogCancel>Keep as failed</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
     </div>
   );
 }
@@ -1872,6 +1990,22 @@ function getClaimReviewSeverityStyle(severity: ClaimReviewSeverity) {
   }
 
   return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+}
+
+function getClaimExportRow(claim: Claim, member: Member | undefined) {
+  return {
+    attempts: claim.attemptCount,
+    createdAt: claim.createdAt,
+    lastAttempted: claim.lastAttemptedAt ?? "",
+    lastFailure: claim.lastFailureReason ?? "",
+    member: member?.displayName ?? "Unknown member",
+    memberId: claim.memberId,
+    provider: member?.provider ? getProviderLabel(member.provider) : "Not set",
+    serviceDate: claim.serviceDate,
+    status: claim.status,
+    submittedAt: claim.submittedAt ?? "",
+    updatedAt: claim.updatedAt,
+  };
 }
 
 function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
