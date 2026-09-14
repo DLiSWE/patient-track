@@ -11,6 +11,7 @@ All notable changes to the Sophia Members web app should be recorded here.
 - Added a creation-batch view to the required-claims tool, grouping pending services by provider and service date before the member-level detail table.
 - Added an All claims CSV export button to the Claims page for downloading full claim history, not just the selected month.
 - Added a manager-only "Reset failed" action to the Claims page that flips every `Failed` claim back to `Required` and clears its failure reason, so failed bot runs can be re-queued without editing each claim by hand. Confirmation dialog notes the reset spans all failed claims, not just the selected month.
+- Added a manager-only "Delete selected week" action to the Claims page's Generate card. It permanently deletes every claim whose service date falls in the chosen week (from the existing "Week containing" picker), regardless of status or whether a matching attended service entry still exists — unlike "Reset selected range", which only removes claims that still have an attended service entry in the range.
 - Added month-level warning signs to the Tools page for attended services without claims, claims without attended service, and authorization gaps.
 - Documented the app's operator workflow, Tools-page diagnostics, and Claims CSV export behavior in the README.
 

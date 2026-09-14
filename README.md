@@ -81,6 +81,10 @@ The Claims page has several CSV exports:
 
 Managers and super admins see a `Reset failed` button on the Claims page. It flips every claim currently marked `Failed` back to `Required` and clears its recorded failure reason, so a failed bot run can be re-queued in one step. The action spans all failed claims in the database, not just the selected month, and asks for confirmation first.
 
+### Delete a week of claims
+
+Managers and super admins also see a `Delete selected week` button in the Claims page's "Generate required claims" card. It permanently deletes every claim whose service date falls in the week of the "Week containing" date, no matter the claim status. Use it when claims were generated for the wrong week and the service-calendar "Reset selected range" leaves them behind (that reset only removes claims that still have an attended service entry in the range). Confirmation is required.
+
 ## Environment
 
 This app expects browser-safe Supabase environment variables:

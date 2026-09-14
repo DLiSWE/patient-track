@@ -179,10 +179,25 @@ export function ClaimsDashboard({
     memberName: string;
   } | null>(null);
   const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
+  const [isDeleteWeekOpen, setIsDeleteWeekOpen] = useState(false);
   const [claimWeekDate, setClaimWeekDate] = useState(getTodayDate());
   const [isExportingAllClaims, setIsExportingAllClaims] = useState(false);
 
   const canonicalClaims = useMemo(() => getCanonicalClaims(claims), [claims]);
+
+  const selectedWeekRange = useMemo(
+    () => getWeekDateRange(claimWeekDate || getTodayDate()),
+    [claimWeekDate]
+  );
+  const claimsInSelectedWeek = useMemo(
+    () =>
+      canonicalClaims.filter(
+        (claim) =>
+          claim.serviceDate >= selectedWeekRange.start &&
+          claim.serviceDate <= selectedWeekRange.end
+      ),
+    [canonicalClaims, selectedWeekRange]
+  );
 
   function updateClaims(updater: (currentClaims: Claim[]) => Claim[]) {
     const nextClaims = updater(canonicalClaims);
@@ -798,6 +813,62 @@ export function ClaimsDashboard({
     setBusyMessage(null);
   }
 
+  async function confirmDeleteWeekClaims() {
+    if (!supabase) {
+      return;
+    }
+
+    const { start, end } = selectedWeekRange;
+
+    if (!start || !end) {
+      toast.error("Pick a valid week first.");
+      return;
+    }
+
+    setIsSaving(true);
+    setBusyMessage(`Deleting claims for ${start} to ${end}...`);
+
+    // Delete straight off the service_date range instead of collecting ids and
+    // passing them to .in(...): a full week across every member can be hundreds
+    // of rows, and that id list overflows the request URL and comes back as a
+    // 400. .select() still returns the deleted rows so we can prune local state.
+    const { data, error } = await supabase
+      .from("claims")
+      .delete()
+      .gte("service_date", start)
+      .lte("service_date", end)
+      .select("id");
+
+    if (error) {
+      toast.error(error.message);
+    } else {
+      const deletedIds = new Set((data ?? []).map((row) => row.id));
+      const deletedCount = deletedIds.size;
+
+      if (deletedCount === 0) {
+        toast.success("No claims for that week.");
+      } else {
+        updateClaims((currentClaims) =>
+          currentClaims.filter((claim) => !deletedIds.has(claim.id))
+        );
+        await onMonthDataRefresh?.(month);
+        await onAudit?.({
+          action: "claims_week_deleted",
+          entityType: "claim",
+          summary: `Deleted ${deletedCount} claim${deletedCount === 1 ? "" : "s"} for ${start} to ${end}.`,
+          metadata: { start, end, count: deletedCount },
+        });
+        toast.success(
+          `Deleted ${deletedCount} claim${deletedCount === 1 ? "" : "s"} for the week of ${start}.`
+        );
+      }
+    }
+
+    setIsDeleteWeekOpen(false);
+    setIsSaving(false);
+    setBusyMessage(null);
+  }
+
   async function handleGenerateRequiredClaims(range: "week" | "monthToDate" | "month") {
     if (!supabase) {
       return;
@@ -1058,34 +1129,55 @@ export function ClaimsDashboard({
               onChange={(event) => setClaimWeekDate(event.target.value)}
             />
           </Field>
-          <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isSaving}
-            onClick={() => handleGenerateRequiredClaims("week")}
-          >
-            <CalendarRangeIcon data-icon="inline-start" />
-            Selected week
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isSaving}
-            onClick={() => handleGenerateRequiredClaims("monthToDate")}
-          >
-            <CalendarClockIcon data-icon="inline-start" />
-            Through today
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isSaving}
-            onClick={() => handleGenerateRequiredClaims("month")}
-          >
-            <CalendarDaysIcon data-icon="inline-start" />
-            Whole month
-          </Button>
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSaving}
+                onClick={() => handleGenerateRequiredClaims("week")}
+              >
+                <CalendarRangeIcon data-icon="inline-start" />
+                Selected week
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSaving}
+                onClick={() => handleGenerateRequiredClaims("monthToDate")}
+              >
+                <CalendarClockIcon data-icon="inline-start" />
+                Through today
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSaving}
+                onClick={() => handleGenerateRequiredClaims("month")}
+              >
+                <CalendarDaysIcon data-icon="inline-start" />
+                Whole month
+              </Button>
+              {isManagerOrAbove ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={isSaving || !claimWeekDate}
+                  onClick={() => setIsDeleteWeekOpen(true)}
+                >
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete selected week
+                </Button>
+              ) : null}
+            </div>
+            {isManagerOrAbove ? (
+              <p className="text-xs text-muted-foreground">
+                Delete removes every claim with a service date of{" "}
+                {new Date(`${selectedWeekRange.start}T00:00:00`).toLocaleDateString()} –{" "}
+                {new Date(`${selectedWeekRange.end}T00:00:00`).toLocaleDateString()} regardless of
+                status. {claimsInSelectedWeek.length} loaded for {formatMonthLabel(month)}.
+              </p>
+            ) : null}
           </div>
         </CardContent>
       </Card>
@@ -1810,6 +1902,30 @@ export function ClaimsDashboard({
               Reset failed claims
             </AlertDialogAction>
             <AlertDialogCancel>Keep as failed</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isDeleteWeekOpen} onOpenChange={setIsDeleteWeekOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete claims for the selected week?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes every claim with a service date from{" "}
+              {new Date(`${selectedWeekRange.start}T00:00:00`).toLocaleDateString()} to{" "}
+              {new Date(`${selectedWeekRange.end}T00:00:00`).toLocaleDateString()}, across every
+              member and every status. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={confirmDeleteWeekClaims}
+              disabled={isSaving}
+            >
+              Delete claims
+            </AlertDialogAction>
+            <AlertDialogCancel>Keep claims</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
