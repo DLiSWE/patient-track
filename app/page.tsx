@@ -66,8 +66,9 @@ import {
 } from "@/lib/date-utils";
 import { isMemberActiveOnDate, mapMemberRow, type Member } from "@/lib/member-store";
 import {
+  fetchLatestServiceEntryByMember,
   fetchServiceEntriesInRange,
-  getLatestServiceEntryByMember,
+  mergeLatestServiceEntries,
   getTodayDate,
   type ServiceEntry,
 } from "@/lib/service-store";
@@ -247,6 +248,9 @@ export default function HomePage() {
 
   const [members, setMembers] = useState<Member[]>([]);
   const [monthServiceEntries, setMonthServiceEntries] = useState<ServiceEntry[]>([]);
+  const [allTimeLatestServiceEntries, setAllTimeLatestServiceEntries] = useState<
+    Map<string, ServiceEntry>
+  >(() => new Map());
   const [monthClaims, setMonthClaims] = useState<Claim[]>([]);
   const [isWidgetDataLoading, setIsWidgetDataLoading] = useState(true);
 
@@ -410,14 +414,16 @@ export default function HomePage() {
       setIsWidgetDataLoading(true);
       const monthRange = getMonthDateRange(landingMonth);
 
-      const [membersResult, servicesResult, claimsResult] = await Promise.all([
-        supabaseClient
-          .from("members")
-          .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
-          .order("display_name", { ascending: true }),
-        fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end),
-        fetchClaimsInRange(supabaseClient, monthRange.start, monthRange.end),
-      ]);
+      const [membersResult, servicesResult, claimsResult, latestServicesResult] =
+        await Promise.all([
+          supabaseClient
+            .from("members")
+            .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+            .order("display_name", { ascending: true }),
+          fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end),
+          fetchClaimsInRange(supabaseClient, monthRange.start, monthRange.end),
+          fetchLatestServiceEntryByMember(supabaseClient),
+        ]);
 
       if (isCancelled) {
         return;
@@ -428,6 +434,9 @@ export default function HomePage() {
       }
       if (!servicesResult.error) {
         setMonthServiceEntries(servicesResult.data);
+      }
+      if (!latestServicesResult.error) {
+        setAllTimeLatestServiceEntries(latestServicesResult.data);
       }
       if (!claimsResult.error) {
         setMonthClaims(claimsResult.data);
@@ -480,9 +489,15 @@ export default function HomePage() {
 
     return counts;
   }, [monthClaims]);
+  // The landing page only loads one month, so the hold / medical / vacation
+  // lists use an all-time snapshot of each member's last entry, overlaid with
+  // the loaded month's (fresher) entries.
   const lastServiceEntryByMember = useMemo(
-    () => getLatestServiceEntryByMember(monthServiceEntries),
-    [monthServiceEntries]
+    () =>
+      mergeLatestServiceEntries(allTimeLatestServiceEntries, monthServiceEntries, [
+        landingMonth,
+      ]),
+    [allTimeLatestServiceEntries, landingMonth, monthServiceEntries]
   );
   const membersByLastStatus = useMemo(() => {
     const byStatus = new Map<string, Member[]>();

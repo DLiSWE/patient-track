@@ -83,9 +83,11 @@ import {
   ServiceEntryFormValues,
   createEmptyServiceEntryForm,
   defaultServiceStatus,
+  fetchLatestServiceEntryByMember,
   fetchServiceEntriesInRange,
   getTodayDate,
   mapServiceEntryRow,
+  mergeLatestServiceEntries,
   serviceEntrySelectColumns,
   serviceStatusOptions,
   toServiceEntryInsert,
@@ -208,6 +210,7 @@ const failedSignInStorageKey = "sophia_failed_sign_in";
 const dismissedSecurityEventStorageKey = "sophia_dismissed_security_event";
 const maxFailedSignInAttempts = 5;
 const signInLockoutMs = 15 * 60 * 1000;
+const idleLogoutMs = 24 * 60 * 60 * 1000;
 const securityEventLookbackMs = 24 * 60 * 60 * 1000;
 const memberActivityPageSize = 10;
 const directoryPageSize = 10;
@@ -316,6 +319,9 @@ export function MemberManager({
   const [loadedDataMonths, setLoadedDataMonths] = useState<Set<string>>(
     () => new Set()
   );
+  const [allTimeLatestServiceEntries, setAllTimeLatestServiceEntries] = useState<
+    Map<string, ServiceEntry>
+  >(() => new Map());
   const [memberDetailMonth, setMemberDetailMonth] = useState(getMonthInputValue());
   const [selectedSummaryDate, setSelectedSummaryDate] = useState(getTodayDate());
   const [summaryMemberQuery, setSummaryMemberQuery] = useState("");
@@ -455,6 +461,36 @@ export function MemberManager({
   }, [failedSignInState.lockedUntil]);
 
   useEffect(() => {
+    if (!session || mode !== "app" || !supabase) {
+      return;
+    }
+
+    let timeoutId = window.setTimeout(handleIdleLogout, idleLogoutMs);
+
+    function resetIdleTimer() {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(handleIdleLogout, idleLogoutMs);
+    }
+
+    async function handleIdleLogout() {
+      toast.info("Signed out after 24 hours of inactivity.");
+      await supabase?.auth.signOut();
+    }
+
+    const events = ["keydown", "mousedown", "mousemove", "scroll", "touchstart"];
+    for (const eventName of events) {
+      window.addEventListener(eventName, resetIdleTimer, { passive: true });
+    }
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      for (const eventName of events) {
+        window.removeEventListener(eventName, resetIdleTimer);
+      }
+    };
+  }, [mode, session]);
+
+  useEffect(() => {
     if (!supabase) {
       return;
     }
@@ -472,6 +508,7 @@ export function MemberManager({
       if (!nextSession) {
         setMembers([]);
         setServiceEntries([]);
+        setAllTimeLatestServiceEntries(new Map());
         setClaims([]);
         setLoadedDataMonths(new Set());
         setIsMfaChallengeRequired(false);
@@ -611,24 +648,17 @@ export function MemberManager({
     [activeMembers]
   );
 
-  const lastServiceEntryByMember = useMemo(() => {
-    const latestByMember = new Map<string, ServiceEntry>();
-
-    for (const entry of serviceEntries) {
-      const current = latestByMember.get(entry.memberId);
-
-      if (
-        !current ||
-        entry.serviceDate > current.serviceDate ||
-        (entry.serviceDate === current.serviceDate &&
-          getServiceEntryUpdatedAt(entry) > getServiceEntryUpdatedAt(current))
-      ) {
-        latestByMember.set(entry.memberId, entry);
-      }
-    }
-
-    return latestByMember;
-  }, [serviceEntries]);
+  // All-time snapshot overlaid with the months loaded in memory, so the
+  // "On hold" / "On medical" / "On vacation" lists see a member's true last
+  // status even when it was recorded in a month that isn't loaded.
+  const lastServiceEntryByMember = useMemo(
+    () =>
+      mergeLatestServiceEntries(allTimeLatestServiceEntries, serviceEntries, [
+        ...loadedDataMonths,
+        ...serviceEntries.map((entry) => entry.serviceDate.slice(0, 7)),
+      ]),
+    [allTimeLatestServiceEntries, loadedDataMonths, serviceEntries]
+  );
 
   const membersByLastServiceStatus = useMemo(() => {
     const byStatus = new Map<string, Member[]>();
@@ -1354,11 +1384,13 @@ export function MemberManager({
         .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .order("display_name", { ascending: true });
 
-      const [membersResult, servicesResult, claimsResult] = await Promise.all([
-        membersRequest,
-        fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
-        fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
-      ]);
+      const [membersResult, servicesResult, claimsResult, latestServicesResult] =
+        await Promise.all([
+          membersRequest,
+          fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+          fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+          fetchLatestServiceEntryByMember(supabase),
+        ]);
 
       if (membersResult.error) {
         showError(membersResult.error.message);
@@ -1378,6 +1410,12 @@ export function MemberManager({
         setServiceEntries((currentEntries) =>
           replaceServiceEntriesForMonth(currentEntries, month, servicesResult.data)
         );
+      }
+
+      if (latestServicesResult.error) {
+        showError(latestServicesResult.error.message);
+      } else {
+        setAllTimeLatestServiceEntries(latestServicesResult.data);
       }
 
       if (claimsResult.error) {
@@ -1796,6 +1834,7 @@ export function MemberManager({
     await supabase.auth.signOut();
     setMembers([]);
     setServiceEntries([]);
+    setAllTimeLatestServiceEntries(new Map());
     resetForm();
   }
 

@@ -139,3 +139,37 @@ export function getLatestServiceEntryByMember(entries: ServiceEntry[]) {
 
   return latestByMember;
 }
+
+/**
+ * Each member's most recent service entry across all time. The dashboards only
+ * keep the months they've loaded in memory, so "last tracked as hold/medical"
+ * can't be derived from those alone -- a member whose last Hold was in an
+ * earlier month would silently drop out of the list.
+ */
+export async function fetchLatestServiceEntryByMember(supabaseClient: SupabaseClient) {
+  const result = await fetchAllServiceEntries(supabaseClient);
+
+  return {
+    data: getLatestServiceEntryByMember(result.data),
+    error: result.error,
+  };
+}
+
+/**
+ * Combines the all-time snapshot with the entries loaded for specific months.
+ * Loaded months are authoritative (they reflect edits/deletes made since the
+ * snapshot was fetched), so snapshot entries that fall in those months are
+ * ignored in favour of the loaded ones.
+ */
+export function mergeLatestServiceEntries(
+  snapshot: Map<string, ServiceEntry>,
+  loadedEntries: ServiceEntry[],
+  loadedMonths: Iterable<string>
+) {
+  const loadedMonthSet = new Set(loadedMonths);
+  const snapshotEntries = Array.from(snapshot.values()).filter(
+    (entry) => !loadedMonthSet.has(entry.serviceDate.slice(0, 7))
+  );
+
+  return getLatestServiceEntryByMember([...snapshotEntries, ...loadedEntries]);
+}
