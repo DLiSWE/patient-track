@@ -75,6 +75,8 @@ export async function fetchAdminAuditEvents(
   const limit = options.limit ?? 10;
   const offset = options.offset ?? 0;
   const sensitiveActions = [
+    "closed_day_added",
+    "closed_day_removed",
     "member_archived",
     "member_deleted",
     "holds_bulk_continued",

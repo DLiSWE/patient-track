@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 
 export function MemberDetailCard({
   claims,
+  closedDates,
   member,
   month,
   onBack,
@@ -61,6 +62,8 @@ export function MemberDetailCard({
   serviceEntries,
 }: {
   claims: Claim[];
+  // Center-wide closed days (holidays): not expected, so never "missed".
+  closedDates?: ReadonlySet<string>;
   member: Member;
   month: string;
   onBack: () => void;
@@ -83,7 +86,8 @@ export function MemberDetailCard({
   const expectedDatesThisMonth = getExpectedServiceDatesForMonth(
     month,
     member.serviceDays,
-    new Set()
+    new Set(),
+    closedDates
   );
   const attendedDatesThisMonth = new Set(
     servicesThisMonth.map((entry) => entry.serviceDate)

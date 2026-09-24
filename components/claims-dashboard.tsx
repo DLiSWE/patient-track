@@ -138,6 +138,7 @@ type ClaimReviewItem = {
 
 export function ClaimsDashboard({
   claims,
+  closedDates,
   isLoading = false,
   isManagerOrAbove = false,
   memberById,
@@ -150,6 +151,8 @@ export function ClaimsDashboard({
   serviceEntries,
 }: {
   claims: Claim[];
+  // Center-wide closed days (holidays): never "expected missing".
+  closedDates?: ReadonlySet<string>;
   isLoading?: boolean;
   isManagerOrAbove?: boolean;
   memberById: Map<string, Member>;
@@ -314,7 +317,8 @@ export function ClaimsDashboard({
       const missingDates = getExpectedServiceDatesForMonth(
         month,
         member.serviceDays,
-        recordedDatesByMember.get(member.id) ?? new Set<string>()
+        recordedDatesByMember.get(member.id) ?? new Set<string>(),
+        closedDates
       ).filter((date) => date <= today && isMemberActiveOnDate(member, date));
 
       for (const serviceDate of missingDates) {
@@ -429,7 +433,7 @@ export function ClaimsDashboard({
         left.memberName.localeCompare(right.memberName)
       );
     });
-  }, [canonicalClaims, claimKeySet, memberById, members, month, monthServiceEntries]);
+  }, [canonicalClaims, claimKeySet, closedDates, memberById, members, month, monthServiceEntries]);
 
   const claimReviewStats = useMemo(
     () => ({

@@ -79,6 +79,12 @@ import { AdminPanel } from "@/components/admin-panel";
 import { AuditLog } from "@/components/audit-log";
 import { ClaimsDashboard } from "@/components/claims-dashboard";
 import {
+  type ClosedDay,
+  fetchClosedDays,
+  formatClosedDayTitle,
+  getClosedDateSet,
+} from "@/lib/closed-days-store";
+import {
   ServiceEntry,
   ServiceEntryFormValues,
   createEmptyServiceEntryForm,
@@ -327,6 +333,8 @@ export function MemberManager({
   const [lastServiceEntryByMember, setLastServiceEntryByMember] = useState<
     Map<string, ServiceEntry>
   >(() => new Map());
+  // Center-wide closed days (holidays), managed from the Tools page.
+  const [closedDays, setClosedDays] = useState<ClosedDay[]>([]);
   const [memberDetailMonth, setMemberDetailMonth] = useState(getMonthInputValue());
   const [selectedSummaryDate, setSelectedSummaryDate] = useState(getTodayDate());
   const [summaryMemberQuery, setSummaryMemberQuery] = useState("");
@@ -514,6 +522,7 @@ export function MemberManager({
         setMembers([]);
         setServiceEntries([]);
         setLastServiceEntryByMember(new Map());
+        setClosedDays([]);
         setClaims([]);
         setLoadedDataMonths(new Set());
         setIsMfaChallengeRequired(false);
@@ -568,6 +577,14 @@ export function MemberManager({
   const activeMembers = useMemo(
     () => members.filter((member) => isMemberActiveOnDate(member, todayDate)),
     [members, todayDate]
+  );
+  const closedDateSet = useMemo(() => getClosedDateSet(closedDays), [closedDays]);
+  const closedDateTitles = useMemo(
+    () =>
+      new Map(
+        closedDays.map((closedDay) => [closedDay.serviceDate, formatClosedDayTitle(closedDay)])
+      ),
+    [closedDays]
   );
   const discontinuedMembers = useMemo(
     () => members.filter((member) => !isMemberActiveOnDate(member, todayDate)),
@@ -898,11 +915,12 @@ export function MemberManager({
       getExpectedServiceDatesForMonth(
         calendarMonth,
         selectedServiceMember?.serviceDays ?? "",
-        new Set()
+        new Set(),
+        closedDateSet
       ).filter((serviceDate) =>
         isMemberActiveOnDate(selectedServiceMember, serviceDate)
       ),
-    [calendarMonth, selectedServiceMember]
+    [calendarMonth, closedDateSet, selectedServiceMember]
   );
   const unavailableServiceDatesForMemberMonth = useMemo(
     () =>
@@ -1080,8 +1098,9 @@ export function MemberManager({
     [selectedSummaryDate, serviceEntries]
   );
   const summaryExpectedMembersByDate = useMemo(
-    () => getExpectedMembersByDate(summaryMonth, activeMembers, getTodayDate()),
-    [activeMembers, summaryMonth]
+    () =>
+      getExpectedMembersByDate(summaryMonth, activeMembers, getTodayDate(), closedDateSet),
+    [activeMembers, closedDateSet, summaryMonth]
   );
   const selectedSummaryExpectedMembers = useMemo(
     () => summaryExpectedMembersByDate.get(selectedSummaryDate) ?? [],
@@ -1111,7 +1130,8 @@ export function MemberManager({
       const missingDates = getExpectedServiceDatesForMonth(
         summaryMonth,
         member.serviceDays,
-        new Set(memberStatuses.keys())
+        new Set(memberStatuses.keys()),
+        closedDateSet
       ).filter(
         (date) => date <= today && isMemberActiveOnDate(member, date)
       );
@@ -1126,7 +1146,7 @@ export function MemberManager({
     }
 
     return statusByMember;
-  }, [attendanceGridMembers, summaryEntriesForMonth, summaryMonth]);
+  }, [attendanceGridMembers, closedDateSet, summaryEntriesForMonth, summaryMonth]);
   const weekendServiceEntries = useMemo(
     () =>
       serviceEntries.filter((entry) => {
@@ -1396,11 +1416,19 @@ export function MemberManager({
         .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .order("display_name", { ascending: true });
 
-      const [membersResult, servicesResult, claimsResult] = await Promise.all([
+      const [membersResult, servicesResult, claimsResult, closedDaysResult] = await Promise.all([
         membersRequest,
         fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
         fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+        fetchClosedDays(supabase),
       ]);
+
+      // Deliberately quiet on error: until supabase-closed-days.sql has been
+      // run the table doesn't exist, and that shouldn't break the workspace.
+      // The Tools page's Closed days card surfaces the error instead.
+      if (!closedDaysResult.error) {
+        setClosedDays(closedDaysResult.data);
+      }
 
       if (membersResult.error) {
         showError(membersResult.error.message);
@@ -1870,6 +1898,7 @@ export function MemberManager({
     setMembers([]);
     setServiceEntries([]);
     setLastServiceEntryByMember(new Map());
+    setClosedDays([]);
     resetForm();
   }
 
@@ -2100,7 +2129,8 @@ export function MemberManager({
         start,
         end,
         member.serviceDays,
-        recordedDatesByMember.get(member.id) ?? new Set<string>()
+        recordedDatesByMember.get(member.id) ?? new Set<string>(),
+        closedDateSet
       ).filter((serviceDate) =>
         isMemberActiveOnDate(member, serviceDate)
       );
@@ -2286,7 +2316,8 @@ export function MemberManager({
         start,
         end,
         member.serviceDays,
-        recordedDatesByMember.get(member.id) ?? new Set<string>()
+        recordedDatesByMember.get(member.id) ?? new Set<string>(),
+        closedDateSet
       )
         .filter((serviceDate) => isMemberActiveOnDate(member, serviceDate))
         .map((serviceDate) =>
@@ -2426,7 +2457,8 @@ export function MemberManager({
       start,
       end,
       member.serviceDays,
-      recordedDates
+      recordedDates,
+      closedDateSet
     ).filter((serviceDate) => isMemberActiveOnDate(member, serviceDate));
 
     if (expectedDates.length === 0) {
@@ -2709,7 +2741,8 @@ export function MemberManager({
     const expectedDates = getExpectedServiceDatesForMonth(
       calendarMonth,
       selectedServiceMember?.serviceDays ?? "",
-      recordedServiceDatesForMemberMonth
+      recordedServiceDatesForMemberMonth,
+      closedDateSet
     ).filter((serviceDate) =>
       isMemberActiveOnDate(selectedServiceMember, serviceDate)
     );
@@ -4301,6 +4334,7 @@ export function MemberManager({
             ) : activeView === "claims" ? (
               <ClaimsDashboard
                 claims={claimsForClaimsMonth}
+                closedDates={closedDateSet}
                 isLoading={isClaimsMonthLoading}
                 isManagerOrAbove={isManagerOrAbove}
                 memberById={memberById}
@@ -4315,6 +4349,7 @@ export function MemberManager({
             ) : activeView === "member" && selectedMember ? (
               <MemberDetailCard
                 claims={claims}
+                closedDates={closedDateSet}
                 member={selectedMember}
                 month={memberDetailMonth}
                 onBack={() => {
@@ -4585,6 +4620,7 @@ export function MemberManager({
                             recordedStatusByDate={displayedStatusByDateForMemberMonth}
                             selectedDates={effectiveSelectedDatesForMonth}
                             unavailableDates={unavailableServiceDatesForMemberMonth}
+                            closedDateTitles={closedDateTitles}
                             onClearDates={removeAllSelectedServiceDates}
                             onMonthChange={handleCalendarMonthChange}
                             onResetExpected={resetExpectedServiceDates}

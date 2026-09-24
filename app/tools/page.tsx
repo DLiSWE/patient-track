@@ -16,6 +16,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 
+import { ClosedDaysCard } from "@/components/closed-days-card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -453,6 +454,8 @@ export default function ToolsPage() {
             </Card>
           ))}
         </section>
+
+        <ClosedDaysCard session={session} />
 
         <Card className="border-border/70 bg-card/90 shadow-sm">
           <CardHeader>

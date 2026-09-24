@@ -68,6 +68,8 @@ The month selector uses the same `< Month Year >` pattern as the rest of the app
 - `Creation batches`: groups `Required` claims by provider and service date, matching how claim creation work is usually handled.
 - `Member detail`: shows the same `Required` work grouped by member for follow-up.
 
+`Closed days` is a month calendar for center-wide closures (holidays etc.). Managers and super admins click a weekday to close it for every member, optionally with a reason, and click it again to reopen. A closed day is treated like a weekend everywhere expected service days are worked out: the service calendar blocks it, and bulk fill, Continue holds, status extends, expected/missed counts, the attendance grid, and claim review all skip it. Closing a day never deletes anything: service entries or claims already recorded on it are kept, and the confirmation says how many there are so they can be removed from Services if needed. Requires `supabase-closed-days.sql`; until it's run, the card shows the load error and the rest of the app behaves as if there are no closed days.
+
 ### Claim Exports
 
 The Claims page has several CSV exports:
@@ -115,6 +117,7 @@ Optionally, set `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` to enable hCaptcha bot protectio
 - `supabase-service-entries.sql`
 - `supabase-audit-events.sql`
 - `supabase-security-events.sql`
+- `supabase-closed-days.sql`
 
 ## Changelog
 

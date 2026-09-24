@@ -53,6 +53,7 @@ import {
   SelectTrigger,
 } from "@/components/ui/select";
 import { fetchClaimsInRange, getClaimStatusStyle, type Claim } from "@/lib/claim-store";
+import { fetchClosedDays, getClosedDateSet, type ClosedDay } from "@/lib/closed-days-store";
 import {
   type CalendarDay,
   getCalendarDays,
@@ -247,6 +248,7 @@ export default function HomePage() {
 
   const [members, setMembers] = useState<Member[]>([]);
   const [monthServiceEntries, setMonthServiceEntries] = useState<ServiceEntry[]>([]);
+  const [closedDays, setClosedDays] = useState<ClosedDay[]>([]);
   // Each member's latest service entry across all time -- the landing page
   // only loads one month, so the hold / medical / vacation cards can't be
   // derived from monthServiceEntries.
@@ -416,7 +418,7 @@ export default function HomePage() {
       setIsWidgetDataLoading(true);
       const monthRange = getMonthDateRange(landingMonth);
 
-      const [membersResult, servicesResult, claimsResult, latestServicesResult] =
+      const [membersResult, servicesResult, claimsResult, latestServicesResult, closedDaysResult] =
         await Promise.all([
           supabaseClient
             .from("members")
@@ -425,6 +427,7 @@ export default function HomePage() {
           fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end),
           fetchClaimsInRange(supabaseClient, monthRange.start, monthRange.end),
           fetchLatestServiceEntryByMember(supabaseClient),
+          fetchClosedDays(supabaseClient),
         ]);
 
       if (isCancelled) {
@@ -443,6 +446,11 @@ export default function HomePage() {
       if (!claimsResult.error) {
         setMonthClaims(claimsResult.data);
       }
+      // Quiet on error: the table may not exist until supabase-closed-days.sql
+      // is run; the Tools page's Closed days card reports that instead.
+      if (!closedDaysResult.error) {
+        setClosedDays(closedDaysResult.data);
+      }
       setIsWidgetDataLoading(false);
     }
 
@@ -454,6 +462,7 @@ export default function HomePage() {
   }, [landingMonth, session]);
 
   const today = getTodayDate();
+  const closedDateSet = useMemo(() => getClosedDateSet(closedDays), [closedDays]);
   const activeMembers = useMemo(
     () => members.filter((member) => isMemberActiveOnDate(member, today)),
     [members, today]
@@ -565,8 +574,8 @@ export default function HomePage() {
     return counts;
   }, [monthServiceEntries]);
   const expectedMembersByDate = useMemo(
-    () => getExpectedMembersByDate(landingMonth, activeMembers, today),
-    [activeMembers, landingMonth, today]
+    () => getExpectedMembersByDate(landingMonth, activeMembers, today, closedDateSet),
+    [activeMembers, closedDateSet, landingMonth, today]
   );
   const attendanceGridDays = useMemo(
     () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
@@ -586,7 +595,8 @@ export default function HomePage() {
       const missingDates = getExpectedServiceDatesForMonth(
         landingMonth,
         member.serviceDays,
-        new Set(memberStatuses.keys())
+        new Set(memberStatuses.keys()),
+        closedDateSet
       ).filter((date) => date <= today && isMemberActiveOnDate(member, date));
 
       for (const date of missingDates) {
@@ -599,7 +609,7 @@ export default function HomePage() {
     }
 
     return statusByMember;
-  }, [activeMembers, landingMonth, monthServiceEntries, today]);
+  }, [activeMembers, closedDateSet, landingMonth, monthServiceEntries, today]);
 
   const attendanceGridClaimStatusByMember = useMemo(() => {
     const claimStatusByMember = new Map<string, Map<string, string>>();

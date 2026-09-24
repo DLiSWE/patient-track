@@ -128,10 +128,13 @@ export function getSummaryStats(
   };
 }
 
+// `closedDates` are center-wide closed days (holidays -- see
+// lib/closed-days-store.ts). They're never expected, same as weekends.
 export function getExpectedServiceDatesForMonth(
   month: string,
   serviceDays: string,
-  recordedDates: Set<string>
+  recordedDates: Set<string>,
+  closedDates?: ReadonlySet<string>
 ) {
   const weekdayIndexes = parseServiceWeekdays(serviceDays);
 
@@ -143,7 +146,11 @@ export function getExpectedServiceDatesForMonth(
     .flatMap((day) => (day ? [day] : []))
     .filter((day) => {
       const date = parseDateString(day.date);
-      return weekdayIndexes.has(date.getDay()) && !recordedDates.has(day.date);
+      return (
+        weekdayIndexes.has(date.getDay()) &&
+        !recordedDates.has(day.date) &&
+        !closedDates?.has(day.date)
+      );
     })
     .map((day) => day.date);
 }
@@ -176,7 +183,8 @@ export function getExpectedServiceDatesInRange(
   startDate: string,
   endDate: string,
   serviceDays: string,
-  recordedDates: Set<string>
+  recordedDates: Set<string>,
+  closedDates?: ReadonlySet<string>
 ) {
   const weekdayIndexes = parseServiceWeekdays(serviceDays);
 
@@ -191,7 +199,11 @@ export function getExpectedServiceDatesInRange(
   while (current <= end) {
     const dateString = formatDateString(current);
 
-    if (weekdayIndexes.has(current.getDay()) && !recordedDates.has(dateString)) {
+    if (
+      weekdayIndexes.has(current.getDay()) &&
+      !recordedDates.has(dateString) &&
+      !closedDates?.has(dateString)
+    ) {
       dates.push(dateString);
     }
 
@@ -211,12 +223,13 @@ export function addDaysToDateString(dateString: string, days: number): string {
 export function getExpectedMembersByDate(
   month: string,
   members: Member[],
-  afterDate: string
+  afterDate: string,
+  closedDates?: ReadonlySet<string>
 ) {
   const expectedMembersByDate = new Map<string, Member[]>();
 
   for (const day of getCalendarDays(month)) {
-    if (!day || day.date <= afterDate) {
+    if (!day || day.date <= afterDate || closedDates?.has(day.date)) {
       continue;
     }
 

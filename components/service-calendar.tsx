@@ -102,6 +102,7 @@ export function ServiceCalendar({
   recordedStatusByDate,
   selectedDates,
   unavailableDates,
+  closedDateTitles,
 }: {
   activeStatus?: string;
   // Dates where the member's authorization has lapsed and a new one is
@@ -123,6 +124,8 @@ export function ServiceCalendar({
   recordedStatusByDate?: Map<string, string>;
   selectedDates: string[];
   unavailableDates?: Set<string>;
+  // Center-wide closed days (holidays), date -> hover text. Blocked like weekends.
+  closedDateTitles?: Map<string, string>;
 }) {
   const activeStatusStyle = getServiceStatusStyle(activeStatus);
   const selectedDateSet = new Set(selectedDates);
@@ -243,7 +246,11 @@ export function ServiceCalendar({
           const isPending = Boolean(pendingStatusDates?.has(day.date));
           const dayOfWeek = new Date(`${day.date}T00:00:00`).getDay();
           const isWeekendClosed = dayOfWeek === 0 || dayOfWeek === 6;
-          const isUnavailable = isWeekendClosed || Boolean(unavailableDates?.has(day.date));
+          const closedDayTitle = closedDateTitles?.get(day.date);
+          const isUnavailable =
+            isWeekendClosed ||
+            Boolean(closedDayTitle) ||
+            Boolean(unavailableDates?.has(day.date));
           const recordedStatus = recordedStatusByDate?.get(day.date) ?? "Attended";
           const newStatus = newStatusByDate?.get(day.date) ?? activeStatus;
           const claimStatus = claimStatusByDate?.get(day.date) ?? null;
@@ -257,6 +264,8 @@ export function ServiceCalendar({
             ? `Staged as ${recordedStatus} — click to change, or Save to apply`
             : isWeekendClosed
               ? "Closed on weekends"
+            : closedDayTitle
+              ? closedDayTitle
             : isUnavailable
               ? "Unavailable after discontinued date"
             : isNew
