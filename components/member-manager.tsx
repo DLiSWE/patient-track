@@ -993,6 +993,25 @@ export function MemberManager({
 
   const serviceChangeCount =
     serviceDatesToCreate.length + entriesToDelete.length + pendingStatusChanges.length;
+  // "Next member" on the service calendar steps through active members
+  // alphabetically (names are stored "Last, First"). Discontinued members stay
+  // reachable through the picker but are skipped here. Works from a
+  // discontinued selection too, by finding the next active name after it.
+  const nextServiceMember = useMemo(() => {
+    const compareMembers = (left: Member, right: Member) =>
+      left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id);
+    const sortedActiveMembers = [...activeMembers].sort(compareMembers);
+
+    if (!selectedServiceMember) {
+      return sortedActiveMembers[0] ?? null;
+    }
+
+    return (
+      sortedActiveMembers.find(
+        (member) => compareMembers(member, selectedServiceMember) > 0
+      ) ?? null
+    );
+  }, [activeMembers, selectedServiceMember]);
   const datesToCreateForMonth = useMemo(
     () =>
       serviceDatesToCreate.filter((item) => item.serviceDate.startsWith(`${calendarMonth}-`)),
@@ -4380,112 +4399,135 @@ export function MemberManager({
                       onSubmit={handleServiceSubmit}
                     >
                       <Field label="Member" htmlFor="service-member">
-                        <div className="relative">
-                          <Input
-                            id="service-member"
-                            autoComplete="off"
-                            className="pr-9"
-                            placeholder={
-                              selectedServiceMember?.displayName ?? "Search member name"
-                            }
-                            value={serviceMemberQuery}
-                            onBlur={() => {
-                              window.setTimeout(
-                                () => setIsServiceMemberPickerOpen(false),
-                                120
-                              );
-                            }}
-                            onChange={(event) => {
-                              const nextQuery = event.target.value;
-                              setServiceMemberQuery(nextQuery);
-                              setIsServiceMemberPickerOpen(true);
-                              if (
-                                serviceForm.memberId &&
-                                nextQuery !== selectedServiceMember?.displayName
-                              ) {
-                                setServiceForm((currentForm) => ({
-                                  ...currentForm,
-                                  memberId: "",
-                                }));
-                                setDateOverrides({});
-                                setStatusOverrides({});
+                        <div className="flex gap-2">
+                          <div className="relative min-w-0 flex-1">
+                            <Input
+                              id="service-member"
+                              autoComplete="off"
+                              className="pr-9"
+                              placeholder={
+                                selectedServiceMember?.displayName ?? "Search member name"
                               }
-                            }}
-                            onFocus={() => setIsServiceMemberPickerOpen(true)}
-                            onKeyDown={(event) => {
-                              if (
-                                event.key === "Enter" &&
-                                filteredServiceMembers[0]
-                              ) {
-                                event.preventDefault();
-                                handleServiceMemberChange(filteredServiceMembers[0].id);
-                              } else if (event.key === "Escape") {
-                                setIsServiceMemberPickerOpen(false);
-                              }
-                            }}
-                          />
-                          {serviceMemberQuery || serviceForm.memberId ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label="Clear selected member"
-                              className="absolute top-0.5 right-1 size-7"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => {
-                                setServiceForm((currentForm) => ({
-                                  ...currentForm,
-                                  memberId: "",
-                                }));
-                                setServiceMemberQuery("");
-                                setIsServiceMemberPickerOpen(true);
-                                setDateOverrides({});
-                                setStatusOverrides({});
+                              value={serviceMemberQuery}
+                              onBlur={() => {
+                                window.setTimeout(
+                                  () => setIsServiceMemberPickerOpen(false),
+                                  120
+                                );
                               }}
-                            >
-                              <XIcon />
-                            </Button>
-                          ) : null}
-                          {isServiceMemberPickerOpen &&
-                          (serviceMemberQuery.trim() || !serviceForm.memberId) ? (
-                            <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border bg-popover text-popover-foreground shadow-md dark:border-white/10">
-                              {filteredServiceMembers.length === 0 ? (
-                                <div className="px-3 py-2 text-sm text-muted-foreground">
-                                  No matching members
-                                </div>
-                              ) : (
-                                filteredServiceMembers.map((member) => (
-                                  <button
-                                    key={member.id}
-                                    type="button"
-                                    className={cn(
-                                      "flex w-full items-center justify-between gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted dark:border-white/10 dark:hover:bg-white/[0.06]",
-                                      serviceForm.memberId === member.id && "bg-muted"
-                                    )}
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onClick={() => handleServiceMemberChange(member.id)}
-                                  >
-                                    <span className="flex min-w-0 items-center gap-2 truncate font-medium">
-                                      <span className="truncate">{member.displayName}</span>
-                                      {!isMemberActiveOnDate(member, todayDate) ? (
-                                        <Badge
-                                          variant="outline"
-                                          className="shrink-0 border-muted-foreground/30 text-[10px] font-normal text-muted-foreground"
-                                        >
-                                          Discontinued
-                                        </Badge>
-                                      ) : null}
-                                    </span>
-                                    <span className="shrink-0 text-xs text-muted-foreground">
-                                      {member.provider
-                                        ? getProviderLabel(member.provider)
-                                        : member.serviceDays || "No days"}
-                                    </span>
-                                  </button>
-                                ))
-                              )}
-                            </div>
-                          ) : null}
+                              onChange={(event) => {
+                                const nextQuery = event.target.value;
+                                setServiceMemberQuery(nextQuery);
+                                setIsServiceMemberPickerOpen(true);
+                                if (
+                                  serviceForm.memberId &&
+                                  nextQuery !== selectedServiceMember?.displayName
+                                ) {
+                                  setServiceForm((currentForm) => ({
+                                    ...currentForm,
+                                    memberId: "",
+                                  }));
+                                  setDateOverrides({});
+                                  setStatusOverrides({});
+                                }
+                              }}
+                              onFocus={() => setIsServiceMemberPickerOpen(true)}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.key === "Enter" &&
+                                  filteredServiceMembers[0]
+                                ) {
+                                  event.preventDefault();
+                                  handleServiceMemberChange(filteredServiceMembers[0].id);
+                                } else if (event.key === "Escape") {
+                                  setIsServiceMemberPickerOpen(false);
+                                }
+                              }}
+                            />
+                            {serviceMemberQuery || serviceForm.memberId ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="Clear selected member"
+                                className="absolute top-0.5 right-1 size-7"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setServiceForm((currentForm) => ({
+                                    ...currentForm,
+                                    memberId: "",
+                                  }));
+                                  setServiceMemberQuery("");
+                                  setIsServiceMemberPickerOpen(true);
+                                  setDateOverrides({});
+                                  setStatusOverrides({});
+                                }}
+                              >
+                                <XIcon />
+                              </Button>
+                            ) : null}
+                            {isServiceMemberPickerOpen &&
+                            (serviceMemberQuery.trim() || !serviceForm.memberId) ? (
+                              <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border bg-popover text-popover-foreground shadow-md dark:border-white/10">
+                                {filteredServiceMembers.length === 0 ? (
+                                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                                    No matching members
+                                  </div>
+                                ) : (
+                                  filteredServiceMembers.map((member) => (
+                                    <button
+                                      key={member.id}
+                                      type="button"
+                                      className={cn(
+                                        "flex w-full items-center justify-between gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted dark:border-white/10 dark:hover:bg-white/[0.06]",
+                                        serviceForm.memberId === member.id && "bg-muted"
+                                      )}
+                                      onMouseDown={(event) => event.preventDefault()}
+                                      onClick={() => handleServiceMemberChange(member.id)}
+                                    >
+                                      <span className="flex min-w-0 items-center gap-2 truncate font-medium">
+                                        <span className="truncate">{member.displayName}</span>
+                                        {!isMemberActiveOnDate(member, todayDate) ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="shrink-0 border-muted-foreground/30 text-[10px] font-normal text-muted-foreground"
+                                          >
+                                            Discontinued
+                                          </Badge>
+                                        ) : null}
+                                      </span>
+                                      <span className="shrink-0 text-xs text-muted-foreground">
+                                        {member.provider
+                                          ? getProviderLabel(member.provider)
+                                          : member.serviceDays || "No days"}
+                                      </span>
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="shrink-0"
+                            disabled={isSaving || !nextServiceMember || serviceChangeCount > 0}
+                            title={
+                              serviceChangeCount > 0
+                                ? "Save or clear this member's changes first"
+                                : nextServiceMember
+                                  ? `Next: ${nextServiceMember.displayName}`
+                                  : "This is the last member"
+                            }
+                            onClick={() => {
+                              if (nextServiceMember) {
+                                handleServiceMemberChange(nextServiceMember.id);
+                              }
+                            }}
+                          >
+                            Next member
+                            <ChevronRightIcon data-icon="inline-end" />
+                          </Button>
                         </div>
                       </Field>
 
