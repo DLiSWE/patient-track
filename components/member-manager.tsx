@@ -87,7 +87,6 @@ import {
   fetchServiceEntriesInRange,
   getTodayDate,
   mapServiceEntryRow,
-  mergeLatestServiceEntries,
   serviceEntrySelectColumns,
   serviceStatusOptions,
   toServiceEntryInsert,
@@ -316,10 +315,16 @@ export function MemberManager({
   const [bulkFillStartDate, setBulkFillStartDate] = useState(getTodayDate());
   const [bulkFillEndDate, setBulkFillEndDate] = useState(getTodayDate());
   const [isBulkFillConfirmOpen, setIsBulkFillConfirmOpen] = useState(false);
+  const [isContinueHoldsOpen, setIsContinueHoldsOpen] = useState(false);
+  const [continueHoldsEndDate, setContinueHoldsEndDate] = useState(
+    () => getMonthDateRange(getMonthInputValue()).end
+  );
   const [loadedDataMonths, setLoadedDataMonths] = useState<Set<string>>(
     () => new Set()
   );
-  const [allTimeLatestServiceEntries, setAllTimeLatestServiceEntries] = useState<
+  // Each member's latest service entry across all time (not just the loaded
+  // months) -- drives the hold/medical/vacation cards and status-ending alerts.
+  const [lastServiceEntryByMember, setLastServiceEntryByMember] = useState<
     Map<string, ServiceEntry>
   >(() => new Map());
   const [memberDetailMonth, setMemberDetailMonth] = useState(getMonthInputValue());
@@ -508,7 +513,7 @@ export function MemberManager({
       if (!nextSession) {
         setMembers([]);
         setServiceEntries([]);
-        setAllTimeLatestServiceEntries(new Map());
+        setLastServiceEntryByMember(new Map());
         setClaims([]);
         setLoadedDataMonths(new Set());
         setIsMfaChallengeRequired(false);
@@ -570,8 +575,8 @@ export function MemberManager({
   );
 
   const statusEndingAlerts = useMemo(
-    () => findStatusEndingSoon(members, serviceEntries, todayDate),
-    [members, serviceEntries, todayDate]
+    () => findStatusEndingSoon(members, lastServiceEntryByMember, todayDate),
+    [lastServiceEntryByMember, members, todayDate]
   );
   // Each alert source gets its own detector above and its own adapter into
   // the generic NotificationItem shape here -- add more sources by
@@ -646,18 +651,6 @@ export function MemberManager({
         )
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     [activeMembers]
-  );
-
-  // All-time snapshot overlaid with the months loaded in memory, so the
-  // "On hold" / "On medical" / "On vacation" lists see a member's true last
-  // status even when it was recorded in a month that isn't loaded.
-  const lastServiceEntryByMember = useMemo(
-    () =>
-      mergeLatestServiceEntries(allTimeLatestServiceEntries, serviceEntries, [
-        ...loadedDataMonths,
-        ...serviceEntries.map((entry) => entry.serviceDate.slice(0, 7)),
-      ]),
-    [allTimeLatestServiceEntries, loadedDataMonths, serviceEntries]
   );
 
   const membersByLastServiceStatus = useMemo(() => {
@@ -1384,13 +1377,11 @@ export function MemberManager({
         .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
         .order("display_name", { ascending: true });
 
-      const [membersResult, servicesResult, claimsResult, latestServicesResult] =
-        await Promise.all([
-          membersRequest,
-          fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
-          fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
-          fetchLatestServiceEntryByMember(supabase),
-        ]);
+      const [membersResult, servicesResult, claimsResult] = await Promise.all([
+        membersRequest,
+        fetchServiceEntriesInRange(supabase, monthRange.start, monthRange.end),
+        fetchClaimsInRange(supabase, monthRange.start, monthRange.end),
+      ]);
 
       if (membersResult.error) {
         showError(membersResult.error.message);
@@ -1410,12 +1401,6 @@ export function MemberManager({
         setServiceEntries((currentEntries) =>
           replaceServiceEntriesForMonth(currentEntries, month, servicesResult.data)
         );
-      }
-
-      if (latestServicesResult.error) {
-        showError(latestServicesResult.error.message);
-      } else {
-        setAllTimeLatestServiceEntries(latestServicesResult.data);
       }
 
       if (claimsResult.error) {
@@ -1488,6 +1473,37 @@ export function MemberManager({
     // The dashboard should load once per auth session. Month/member changes are local form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, loadAppProfile, session]);
+
+  // Re-read every member's latest entry whenever the loaded service entries
+  // change. Every save / delete / bulk-fill / status-extend path finishes by
+  // updating serviceEntries from the database, so this keeps the all-time view
+  // in step without each of those paths having to remember to refresh it.
+  useEffect(() => {
+    if (!supabase || !session || !hasMfaFactor || isMfaChallengeRequired || isMfaChecking) {
+      return;
+    }
+
+    const supabaseClient = supabase;
+    let isCancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      const result = await fetchLatestServiceEntryByMember(supabaseClient);
+
+      if (isCancelled) {
+        return;
+      }
+
+      if (result.error) {
+        toast.error(result.error.message);
+      } else {
+        setLastServiceEntryByMember(result.data);
+      }
+    }, 250);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasMfaFactor, isMfaChallengeRequired, isMfaChecking, serviceEntries, session]);
 
   useEffect(() => {
     if (!supabase || !session || !hasMfaFactor || isMfaChallengeRequired || isMfaChecking) {
@@ -1834,7 +1850,7 @@ export function MemberManager({
     await supabase.auth.signOut();
     setMembers([]);
     setServiceEntries([]);
-    setAllTimeLatestServiceEntries(new Map());
+    setLastServiceEntryByMember(new Map());
     resetForm();
   }
 
@@ -2183,6 +2199,154 @@ export function MemberManager({
       `Added ${addedCount} service ${
         addedCount === 1 ? "entry" : "entries"
       } for ${rangeLabel}. ${monthTotal} recorded in ${formatMonthLabel(calendarMonth)}.`
+    );
+    setIsSaving(false);
+  }
+
+  // Bulk version of handleExtendStatus for holds: every member whose latest
+  // entry is Hold gets Hold on each scheduled service day from the day after
+  // that entry through the chosen end date. Days that already have an entry
+  // are left alone, same as the per-member extend and bulk fill.
+  async function handleContinueHolds() {
+    if (!supabase) {
+      return;
+    }
+
+    const end = continueHoldsEndDate;
+
+    if (!end) {
+      showError("Pick the date holds should continue until.");
+      return;
+    }
+
+    const targets = membersOnHold.flatMap((member) => {
+      const lastHoldDate = lastServiceEntryByMember.get(member.id)?.serviceDate;
+
+      return lastHoldDate && lastHoldDate < end
+        ? [{ member, start: addDaysToDateString(lastHoldDate, 1) }]
+        : [];
+    });
+    const skippedNoSchedule = targets.filter(({ member }) => !member.serviceDays).length;
+    const schedulableTargets = targets.filter(({ member }) => member.serviceDays);
+
+    if (schedulableTargets.length === 0) {
+      showInfo(
+        targets.length > 0
+          ? "None of the members on hold have service days set."
+          : `Every hold already runs through ${formatDateLabel(end)}.`
+      );
+      return;
+    }
+
+    const supabaseClient = supabase;
+    const rangeStart = schedulableTargets.reduce(
+      (earliest, { start }) => (start < earliest ? start : earliest),
+      end
+    );
+
+    setIsSaving(true);
+    setBusyMessage(`Continuing holds through ${formatDateLabel(end)}...`);
+
+    const existingResult = await fetchServiceEntriesInRange(supabaseClient, rangeStart, end);
+
+    if (existingResult.error) {
+      showError(existingResult.error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    const recordedDatesByMember = new Map<string, Set<string>>();
+    for (const entry of existingResult.data) {
+      const recordedDates = recordedDatesByMember.get(entry.memberId) ?? new Set<string>();
+      recordedDates.add(entry.serviceDate);
+      recordedDatesByMember.set(entry.memberId, recordedDates);
+    }
+
+    const inserts = schedulableTargets.flatMap(({ member, start }) =>
+      getExpectedServiceDatesInRange(
+        start,
+        end,
+        member.serviceDays,
+        recordedDatesByMember.get(member.id) ?? new Set<string>()
+      )
+        .filter((serviceDate) => isMemberActiveOnDate(member, serviceDate))
+        .map((serviceDate) =>
+          toServiceEntryInsert({
+            memberId: member.id,
+            serviceDate,
+            serviceLabel: "Hold",
+          })
+        )
+    );
+
+    if (inserts.length === 0) {
+      showInfo(`No open service days to fill with Hold through ${formatDateLabel(end)}.`);
+      setIsSaving(false);
+      return;
+    }
+
+    const { error } = await supabaseClient
+      .from("service_entries")
+      .upsert(inserts, { ignoreDuplicates: true, onConflict: "member_id,service_date" });
+
+    if (error) {
+      showError(error.message);
+      setIsSaving(false);
+      return;
+    }
+
+    // Only months already in memory need refreshing -- any other month is
+    // fetched fresh when someone navigates to it.
+    const monthsToRefresh = getMonthsForDateRange(rangeStart, end).filter((month) =>
+      loadedDataMonths.has(month)
+    );
+    const [latestResult, ...refreshedMonthResults] = await Promise.all([
+      fetchLatestServiceEntryByMember(supabaseClient),
+      ...monthsToRefresh.map((month) => {
+        const monthRange = getMonthDateRange(month);
+        return fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end);
+      }),
+    ]);
+
+    const refreshError =
+      latestResult.error ?? refreshedMonthResults.find((result) => result.error)?.error;
+
+    if (refreshError) {
+      showError(refreshError.message);
+    } else {
+      setLastServiceEntryByMember(latestResult.data);
+      setServiceEntries((currentEntries) =>
+        monthsToRefresh.reduce(
+          (nextEntries, month, index) =>
+            replaceServiceEntriesForMonth(nextEntries, month, refreshedMonthResults[index].data),
+          currentEntries
+        )
+      );
+    }
+
+    const continuedMemberCount = new Set(inserts.map((insert) => insert.member_id)).size;
+
+    await recordAuditEvent({
+      action: "holds_bulk_continued",
+      entityType: "service",
+      summary: `Continued holds for ${continuedMemberCount} member${
+        continuedMemberCount === 1 ? "" : "s"
+      } through ${end}.`,
+      metadata: {
+        end,
+        added: inserts.length,
+        members: continuedMemberCount,
+        skippedNoServiceDays: skippedNoSchedule,
+      },
+    });
+    showInfo(
+      `Added ${inserts.length} Hold day${inserts.length === 1 ? "" : "s"} for ${continuedMemberCount} member${
+        continuedMemberCount === 1 ? "" : "s"
+      } through ${formatDateLabel(end)}.${
+        skippedNoSchedule > 0
+          ? ` Skipped ${skippedNoSchedule} with no service days set.`
+          : ""
+      }`
     );
     setIsSaving(false);
   }
@@ -4829,6 +4993,18 @@ export function MemberManager({
                     title="On hold"
                     description={`${membersOnHold.length} last tracked as hold`}
                     emptyMessage="No members on hold"
+                    headerAction={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isSaving || membersOnHold.length === 0}
+                        onClick={() => setIsContinueHoldsOpen(true)}
+                      >
+                        <CalendarRangeIcon data-icon="inline-start" />
+                        Continue holds
+                      </Button>
+                    }
                     getDate={(member) =>
                       lastServiceEntryByMember.get(member.id)?.serviceDate ?? member.updatedAt
                     }
@@ -5601,6 +5777,43 @@ export function MemberManager({
       </AlertDialog>
 
       <AlertDialog
+        open={isContinueHoldsOpen}
+        onOpenChange={(open) => setIsContinueHoldsOpen(open)}
+      >
+        <AlertDialogContent className="gap-5">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Continue holds?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Marks each scheduled service day as Hold for the {membersOnHold.length}{" "}
+              member{membersOnHold.length === 1 ? "" : "s"} currently on hold, from the day
+              after their last hold through the date below. Days that already have an
+              entry are left as they are.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Field label="Continue until" htmlFor="continue-holds-end">
+            <Input
+              id="continue-holds-end"
+              type="date"
+              value={continueHoldsEndDate}
+              onChange={(event) => setContinueHoldsEndDate(event.target.value)}
+            />
+          </Field>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSaving || !continueHoldsEndDate}
+              onClick={() => {
+                setIsContinueHoldsOpen(false);
+                void handleContinueHolds();
+              }}
+            >
+              Continue holds
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={isBulkFillConfirmOpen}
         onOpenChange={(open) => setIsBulkFillConfirmOpen(open)}
       >
@@ -5929,6 +6142,14 @@ function getCanonicalClaims(claims: Claim[]) {
 function formatMonthLabel(month: string) {
   return new Date(`${month}-01T00:00:00`).toLocaleDateString([], {
     month: "long",
+    year: "numeric",
+  });
+}
+
+function formatDateLabel(date: string) {
+  return new Date(`${date}T00:00:00`).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
     year: "numeric",
   });
 }

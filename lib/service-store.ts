@@ -36,6 +36,7 @@ export type ServiceEntryRow = {
 export const serviceEntrySelectColumns =
   "id, member_id, service_date, service_label, created_at, updated_at";
 const serviceEntryFetchPageSize = 1000;
+const latestServiceEntryFetchPageSize = 1000;
 
 export function getTodayDate() {
   return new Date().toLocaleDateString("en-CA");
@@ -120,56 +121,47 @@ export function toServiceEntryInsert(values: ServiceEntryFormValues) {
   };
 }
 
-export function getLatestServiceEntryByMember(entries: ServiceEntry[]) {
-  const latestByMember = new Map<string, ServiceEntry>();
-
-  for (const entry of entries) {
-    const current = latestByMember.get(entry.memberId);
-    const currentUpdatedAt = current ? current.updatedAt || current.createdAt : "";
-    const entryUpdatedAt = entry.updatedAt || entry.createdAt;
-
-    if (
-      !current ||
-      entry.serviceDate > current.serviceDate ||
-      (entry.serviceDate === current.serviceDate && entryUpdatedAt > currentUpdatedAt)
-    ) {
-      latestByMember.set(entry.memberId, entry);
-    }
-  }
-
-  return latestByMember;
-}
-
 /**
- * Each member's most recent service entry across all time. The dashboards only
- * keep the months they've loaded in memory, so "last tracked as hold/medical"
- * can't be derived from those alone -- a member whose last Hold was in an
- * earlier month would silently drop out of the list.
+ * Each member's most recent service entry across all time, read straight from
+ * the database. The dashboards only keep the months they've loaded in memory,
+ * so "last tracked as hold/medical" and the status-ending alerts can't be
+ * derived from those -- a member whose last Hold was in an earlier month would
+ * silently drop out. PostgREST embeds each member's service entries newest
+ * first, limited to one, so this is a single request per page of members
+ * rather than a scan of the whole table. (member_id, service_date) is unique,
+ * so there is never a tie to break.
  */
 export async function fetchLatestServiceEntryByMember(supabaseClient: SupabaseClient) {
-  const result = await fetchAllServiceEntries(supabaseClient);
+  const latestByMember = new Map<string, ServiceEntry>();
 
-  return {
-    data: getLatestServiceEntryByMember(result.data),
-    error: result.error,
-  };
-}
+  for (let from = 0; ; from += latestServiceEntryFetchPageSize) {
+    const { data, error } = await supabaseClient
+      .from("members")
+      .select(`id, service_entries(${serviceEntrySelectColumns})`)
+      .order("id", { ascending: true })
+      .order("service_date", { ascending: false, referencedTable: "service_entries" })
+      .limit(1, { referencedTable: "service_entries" })
+      .range(from, from + latestServiceEntryFetchPageSize - 1);
 
-/**
- * Combines the all-time snapshot with the entries loaded for specific months.
- * Loaded months are authoritative (they reflect edits/deletes made since the
- * snapshot was fetched), so snapshot entries that fall in those months are
- * ignored in favour of the loaded ones.
- */
-export function mergeLatestServiceEntries(
-  snapshot: Map<string, ServiceEntry>,
-  loadedEntries: ServiceEntry[],
-  loadedMonths: Iterable<string>
-) {
-  const loadedMonthSet = new Set(loadedMonths);
-  const snapshotEntries = Array.from(snapshot.values()).filter(
-    (entry) => !loadedMonthSet.has(entry.serviceDate.slice(0, 7))
-  );
+    if (error) {
+      return { data: latestByMember, error };
+    }
 
-  return getLatestServiceEntryByMember([...snapshotEntries, ...loadedEntries]);
+    const rows = (data ?? []) as unknown as Array<{
+      id: string;
+      service_entries: ServiceEntryRow[] | null;
+    }>;
+
+    for (const row of rows) {
+      const latestEntry = row.service_entries?.[0];
+
+      if (latestEntry) {
+        latestByMember.set(row.id, mapServiceEntryRow(latestEntry));
+      }
+    }
+
+    if (rows.length < latestServiceEntryFetchPageSize) {
+      return { data: latestByMember, error: null };
+    }
+  }
 }

@@ -14,6 +14,8 @@ All notable changes to the Sophia Members web app should be recorded here.
 - Added a manager-only "Delete selected week" action to the Claims page's Generate card. It permanently deletes every claim whose service date falls in the chosen week (from the existing "Week containing" picker), regardless of status or whether a matching attended service entry still exists — unlike "Reset selected range", which only removes claims that still have an attended service entry in the range.
 - Added month-level warning signs to the Tools page for attended services without claims, claims without attended service, and authorization gaps.
 - Documented the app's operator workflow, Tools-page diagnostics, and Claims CSV export behavior in the README.
+- Fixed the On hold / Medical / Vacation cards and the "status ending soon" notifications only seeing the loaded month. Each member's latest service entry is now read from their whole history (one embedded `members → service_entries` query, newest entry per member) and re-read after every service change, so a hold recorded in an earlier month is no longer dropped.
+- Added a "Continue holds" action to the On hold card. It marks every scheduled service day as Hold for all members currently on hold, from the day after each member's last hold through a chosen date, leaving days that already have an entry untouched. Logged as the `holds_bulk_continued` audit action (shown in the admin sensitive-actions list).
 
 ## [2.3.0] - 2026-08-19
 

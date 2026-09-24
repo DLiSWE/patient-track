@@ -77,6 +77,7 @@ export async function fetchAdminAuditEvents(
   const sensitiveActions = [
     "member_archived",
     "member_deleted",
+    "holds_bulk_continued",
     "member_reinstated",
     "month_reset",
     "services_bulk_deleted",

@@ -68,7 +68,6 @@ import { isMemberActiveOnDate, mapMemberRow, type Member } from "@/lib/member-st
 import {
   fetchLatestServiceEntryByMember,
   fetchServiceEntriesInRange,
-  mergeLatestServiceEntries,
   getTodayDate,
   type ServiceEntry,
 } from "@/lib/service-store";
@@ -248,7 +247,10 @@ export default function HomePage() {
 
   const [members, setMembers] = useState<Member[]>([]);
   const [monthServiceEntries, setMonthServiceEntries] = useState<ServiceEntry[]>([]);
-  const [allTimeLatestServiceEntries, setAllTimeLatestServiceEntries] = useState<
+  // Each member's latest service entry across all time -- the landing page
+  // only loads one month, so the hold / medical / vacation cards can't be
+  // derived from monthServiceEntries.
+  const [lastServiceEntryByMember, setLastServiceEntryByMember] = useState<
     Map<string, ServiceEntry>
   >(() => new Map());
   const [monthClaims, setMonthClaims] = useState<Claim[]>([]);
@@ -436,7 +438,7 @@ export default function HomePage() {
         setMonthServiceEntries(servicesResult.data);
       }
       if (!latestServicesResult.error) {
-        setAllTimeLatestServiceEntries(latestServicesResult.data);
+        setLastServiceEntryByMember(latestServicesResult.data);
       }
       if (!claimsResult.error) {
         setMonthClaims(claimsResult.data);
@@ -489,16 +491,6 @@ export default function HomePage() {
 
     return counts;
   }, [monthClaims]);
-  // The landing page only loads one month, so the hold / medical / vacation
-  // lists use an all-time snapshot of each member's last entry, overlaid with
-  // the loaded month's (fresher) entries.
-  const lastServiceEntryByMember = useMemo(
-    () =>
-      mergeLatestServiceEntries(allTimeLatestServiceEntries, monthServiceEntries, [
-        landingMonth,
-      ]),
-    [allTimeLatestServiceEntries, landingMonth, monthServiceEntries]
-  );
   const membersByLastStatus = useMemo(() => {
     const byStatus = new Map<string, Member[]>();
 

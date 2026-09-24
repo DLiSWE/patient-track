@@ -67,7 +67,7 @@ function daysBetween(fromDate: string, toDate: string): number {
  */
 export function findStatusEndingSoon(
   members: Member[],
-  serviceEntries: ServiceEntry[],
+  latestEntryByMember: Map<string, ServiceEntry>,
   today: string,
   lookaheadDays: number = STATUS_ENDING_LOOKAHEAD_DAYS,
   lookbackDays: number = STATUS_ENDED_LOOKBACK_DAYS
@@ -76,19 +76,11 @@ export function findStatusEndingSoon(
     members.filter((member) => !member.archivedAt).map((member) => [member.id, member])
   );
 
-  const latestEntryByMember = new Map<string, ServiceEntry>();
-  for (const entry of serviceEntries) {
-    if (!activeMemberById.has(entry.memberId)) {
-      continue;
-    }
-    const current = latestEntryByMember.get(entry.memberId);
-    if (!current || entry.serviceDate > current.serviceDate) {
-      latestEntryByMember.set(entry.memberId, entry);
-    }
-  }
-
   const alerts: StatusEndingAlert[] = [];
   for (const [memberId, entry] of latestEntryByMember) {
+    if (!activeMemberById.has(memberId)) {
+      continue;
+    }
     const statusLabel = entry.serviceLabel.toLowerCase();
     if (!trackedEndingStatuses.has(statusLabel)) {
       continue;

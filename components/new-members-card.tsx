@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { getProviderLabel, type Member } from "@/lib/member-store";
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 export function NewMembersCard({
   defaultCollapsed = false,
   description,
+  headerAction,
   emptyMessage = "No new members this month",
   getDate = (member) => member.createdAt,
   members,
@@ -28,6 +29,7 @@ export function NewMembersCard({
   defaultCollapsed?: boolean;
   description?: string;
   emptyMessage?: string;
+  headerAction?: ReactNode;
   getDate?: (member: Member) => string;
   members: Member[];
   onPageChange: (page: number) => void;
@@ -50,7 +52,8 @@ export function NewMembersCard({
         <CardDescription>
           {description ?? `${members.length} joined this month`}
         </CardDescription>
-        <CardAction>
+        <CardAction className="flex gap-2">
+          {headerAction}
           <Button
             type="button"
             variant="outline"
