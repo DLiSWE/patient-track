@@ -38,7 +38,7 @@ The app now has:
 
 ### Home
 
-The post-login home page is a quick monthly snapshot. It shows configurable widgets for claim status, member status, monthly attendance, the attendance grid, and small internal extras. Use the month selector at the top to move the whole page between months.
+The post-login home page is a quick monthly snapshot. It shows configurable widgets for claim status, member status, monthly attendance, the attendance grid, and small internal extras. Use the month selector at the top (arrows to step, or click the month name to pick any month and year) to move the whole page between months. The attendance grid spans the whole calendar year of the selected month, scrolls sideways with a labelled divider at each month, and jumps to the selected month whenever it changes; its status filter matches statuses anywhere in that year.
 
 ### Workspace
 

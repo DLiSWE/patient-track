@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { toast } from "sonner";
 import {
@@ -33,6 +33,7 @@ import {
   getServiceStatusStyle,
   serviceStatusStyles,
 } from "@/components/service-calendar";
+import { MonthPicker } from "@/components/month-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -59,7 +60,7 @@ import {
   getCalendarDays,
   getCompactWeekdayLabel,
   getExpectedMembersByDate,
-  getExpectedServiceDatesForMonth,
+  getExpectedServiceDatesInRange,
   getMonthDateRange,
   getMonthInputValue,
   normalizeMonthString,
@@ -232,13 +233,6 @@ function shiftMonth(month: string, delta: number): string {
   return getMonthInputValue(new Date(year, monthNumber - 1 + delta, 1));
 }
 
-function formatMonthLabel(month: string): string {
-  return new Date(`${normalizeMonthString(month)}-01T00:00:00`).toLocaleDateString([], {
-    month: "long",
-    year: "numeric",
-  });
-}
-
 export default function HomePage() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
@@ -256,6 +250,12 @@ export default function HomePage() {
     Map<string, ServiceEntry>
   >(() => new Map());
   const [monthClaims, setMonthClaims] = useState<Claim[]>([]);
+  // The attendance grid spans the whole calendar year of landingMonth, so it
+  // keeps its own year of entries/claims; the month widgets stay month-sized.
+  const [yearServiceEntries, setYearServiceEntries] = useState<ServiceEntry[]>([]);
+  const [yearClaims, setYearClaims] = useState<Claim[]>([]);
+  const [isAttendanceYearLoading, setIsAttendanceYearLoading] = useState(true);
+  const attendanceGridScrollRef = useRef<HTMLDivElement>(null);
   const [isWidgetDataLoading, setIsWidgetDataLoading] = useState(true);
 
   const [landingMonth, setLandingMonth] = useState(getMonthInputValue());
@@ -461,6 +461,53 @@ export default function HomePage() {
     };
   }, [landingMonth, session]);
 
+  const landingYear = landingMonth.slice(0, 4);
+
+  useEffect(() => {
+    if (!session || !supabase || !widgetVisibility.attendanceGrid) {
+      return;
+    }
+
+    const supabaseClient: SupabaseClient = supabase;
+    let isCancelled = false;
+
+    async function loadAttendanceYear() {
+      setIsAttendanceYearLoading(true);
+
+      // One fetch per month, in parallel: a single year-long range would page
+      // through every row of the year one request at a time.
+      const monthResults = await Promise.all(
+        Array.from({ length: 12 }, (_, index) => {
+          const { start, end } = getMonthDateRange(
+            `${landingYear}-${String(index + 1).padStart(2, "0")}`
+          );
+          return Promise.all([
+            fetchServiceEntriesInRange(supabaseClient, start, end),
+            fetchClaimsInRange(supabaseClient, start, end),
+          ]);
+        })
+      );
+
+      if (isCancelled) {
+        return;
+      }
+
+      if (monthResults.every(([servicesResult]) => !servicesResult.error)) {
+        setYearServiceEntries(monthResults.flatMap(([servicesResult]) => servicesResult.data));
+      }
+      if (monthResults.every(([, claimsResult]) => !claimsResult.error)) {
+        setYearClaims(monthResults.flatMap(([, claimsResult]) => claimsResult.data));
+      }
+      setIsAttendanceYearLoading(false);
+    }
+
+    void loadAttendanceYear();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [landingYear, session, widgetVisibility.attendanceGrid]);
+
   const today = getTodayDate();
   const closedDateSet = useMemo(() => getClosedDateSet(closedDays), [closedDays]);
   const activeMembers = useMemo(
@@ -577,14 +624,27 @@ export default function HomePage() {
     () => getExpectedMembersByDate(landingMonth, activeMembers, today, closedDateSet),
     [activeMembers, closedDateSet, landingMonth, today]
   );
+  const attendanceGridMonths = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, index) => {
+        const month = `${landingYear}-${String(index + 1).padStart(2, "0")}`;
+
+        return {
+          month,
+          label: new Date(`${month}-01T00:00:00`).toLocaleDateString([], { month: "long" }),
+          days: getCalendarDays(month).filter((day): day is CalendarDay => Boolean(day)),
+        };
+      }),
+    [landingYear]
+  );
   const attendanceGridDays = useMemo(
-    () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
-    [calendarDays]
+    () => attendanceGridMonths.flatMap((gridMonth) => gridMonth.days),
+    [attendanceGridMonths]
   );
   const attendanceGridStatusByMember = useMemo(() => {
     const statusByMember = new Map<string, Map<string, string>>();
 
-    for (const entry of monthServiceEntries) {
+    for (const entry of yearServiceEntries) {
       const memberStatuses = statusByMember.get(entry.memberId) ?? new Map<string, string>();
       memberStatuses.set(entry.serviceDate, entry.serviceLabel);
       statusByMember.set(entry.memberId, memberStatuses);
@@ -592,8 +652,9 @@ export default function HomePage() {
 
     for (const member of activeMembers) {
       const memberStatuses = statusByMember.get(member.id) ?? new Map<string, string>();
-      const missingDates = getExpectedServiceDatesForMonth(
-        landingMonth,
+      const missingDates = getExpectedServiceDatesInRange(
+        `${landingYear}-01-01`,
+        `${landingYear}-12-31`,
         member.serviceDays,
         new Set(memberStatuses.keys()),
         closedDateSet
@@ -609,12 +670,12 @@ export default function HomePage() {
     }
 
     return statusByMember;
-  }, [activeMembers, closedDateSet, landingMonth, monthServiceEntries, today]);
+  }, [activeMembers, closedDateSet, landingYear, today, yearServiceEntries]);
 
   const attendanceGridClaimStatusByMember = useMemo(() => {
     const claimStatusByMember = new Map<string, Map<string, string>>();
 
-    for (const claim of monthClaims) {
+    for (const claim of yearClaims) {
       const memberClaims =
         claimStatusByMember.get(claim.memberId) ?? new Map<string, string>();
       memberClaims.set(claim.serviceDate, claim.status);
@@ -622,7 +683,7 @@ export default function HomePage() {
     }
 
     return claimStatusByMember;
-  }, [monthClaims]);
+  }, [yearClaims]);
 
   const sortedAttendanceGridMembers = useMemo(
     () =>
@@ -676,6 +737,33 @@ export default function HomePage() {
         safeAttendanceGridPage * attendanceGridPageSize,
         safeAttendanceGridPage * attendanceGridPageSize + attendanceGridPageSize
       );
+
+  const isAttendanceGridTableShown =
+    !isAttendanceYearLoading &&
+    attendanceGridDays.length > 0 &&
+    visibleAttendanceGridMembers.length > 0;
+
+  // Keep the selected month at the left edge of the year grid (just right of
+  // the sticky Member column) whenever the month selector or the data changes.
+  useEffect(() => {
+    const container = attendanceGridScrollRef.current;
+
+    if (!container || !isAttendanceGridTableShown) {
+      return;
+    }
+
+    const monthStart = container.querySelector<HTMLElement>(
+      `[data-month-start="${landingMonth}"]`
+    );
+    const memberColumn = container.querySelector<HTMLElement>("[data-member-column]");
+
+    if (monthStart) {
+      container.scrollTo({
+        left: Math.max(0, monthStart.offsetLeft - (memberColumn?.offsetWidth ?? 0)),
+        behavior: "smooth",
+      });
+    }
+  }, [isAttendanceGridTableShown, landingMonth]);
 
   const noWidgetsSelected =
     !widgetVisibility.claimStatus &&
@@ -770,9 +858,13 @@ export default function HomePage() {
                 >
                   <ChevronLeftIcon />
                 </Button>
-                <span className="min-w-28 text-center text-sm font-medium">
-                  {formatMonthLabel(landingMonth)}
-                </span>
+                <MonthPicker
+                  month={landingMonth}
+                  onChange={(month) => {
+                    setLandingMonth(month);
+                    setAttendanceGridPage(0);
+                  }}
+                />
                 <Button
                   type="button"
                   variant="ghost"
@@ -962,7 +1054,8 @@ export default function HomePage() {
                 <div>
                   <h3 className="text-sm font-medium">Attendance grid</h3>
                   <p className="text-xs text-muted-foreground">
-                    Every active member&apos;s daily status this month, at a glance.
+                    Every active member&apos;s daily status for {landingYear}. Scroll sideways
+                    through the year; picking a month above jumps to it.
                   </p>
                 </div>
                 <Button
@@ -1058,9 +1151,13 @@ export default function HomePage() {
                 </span>
               </div>
 
-              {attendanceGridDays.length === 0 || activeMembers.length === 0 ? (
+              {isAttendanceYearLoading ||
+              attendanceGridDays.length === 0 ||
+              activeMembers.length === 0 ? (
                 <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-                  {isWidgetDataLoading ? "Loading..." : "No active members"}
+                  {isWidgetDataLoading || isAttendanceYearLoading
+                    ? `Loading ${landingYear}...`
+                    : "No active members"}
                 </div>
               ) : filteredAttendanceGridMembers.length === 0 ? (
                 <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
@@ -1068,17 +1165,45 @@ export default function HomePage() {
                 </div>
               ) : (
                 <>
-                  <div className="overflow-x-auto rounded-lg border dark:border-white/10">
-                    <table className="w-full border-separate border-spacing-0 text-xs">
+                  <div
+                    ref={attendanceGridScrollRef}
+                    className="max-w-full overflow-x-auto rounded-lg border dark:border-white/10"
+                  >
+                    <table className="w-max min-w-full border-separate border-spacing-0 text-xs">
                       <thead>
                         <tr>
-                          <th className="sticky left-0 z-10 min-w-40 border-b bg-background px-2 py-1.5 text-left font-medium dark:border-white/10">
+                          <th
+                            rowSpan={2}
+                            data-member-column
+                            className="sticky left-0 z-20 min-w-40 border-b bg-background px-2 py-1.5 text-left align-bottom font-medium dark:border-white/10"
+                          >
                             Member
                           </th>
+                          {attendanceGridMonths.map((gridMonth) => (
+                            <th
+                              key={gridMonth.month}
+                              colSpan={gridMonth.days.length}
+                              data-month-start={gridMonth.month}
+                              className={cn(
+                                "border-b border-l-2 border-l-muted-foreground/30 bg-background px-2 py-1 text-left text-[11px] font-semibold dark:border-white/10 dark:border-l-white/25",
+                                gridMonth.month === landingMonth
+                                  ? "text-foreground"
+                                  : "text-muted-foreground"
+                              )}
+                            >
+                              {gridMonth.label}
+                            </th>
+                          ))}
+                        </tr>
+                        <tr>
                           {attendanceGridDays.map((day) => (
                             <th
                               key={day.date}
-                              className="min-w-7 border-b bg-background px-0.5 py-1.5 text-center font-medium text-muted-foreground dark:border-white/10"
+                              className={cn(
+                                "min-w-7 border-b bg-background px-0.5 py-1.5 text-center font-medium text-muted-foreground dark:border-white/10",
+                                day.dayNumber === 1 &&
+                                  "border-l-2 border-l-muted-foreground/30 dark:border-l-white/25"
+                              )}
                             >
                               <span className="block text-[10px] leading-tight">
                                 {getCompactWeekdayLabel(day.date)}
@@ -1115,7 +1240,11 @@ export default function HomePage() {
                                 return (
                                   <td
                                     key={day.date}
-                                    className="border-b px-0.5 py-1 dark:border-white/10"
+                                    className={cn(
+                                      "border-b px-0.5 py-1 dark:border-white/10",
+                                      day.dayNumber === 1 &&
+                                        "border-l-2 border-l-muted-foreground/30 dark:border-l-white/25"
+                                    )}
                                     title={titleParts.length > 0 ? titleParts.join(" | ") : undefined}
                                   >
                                     <span className="relative mx-auto block size-4">
