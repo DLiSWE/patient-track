@@ -743,6 +743,16 @@ export function MemberManager({
         .includes(normalizedQuery)
     );
   }, [members, serviceMemberQuery]);
+  // What the Service calendar's member box shows: the selected member's name
+  // (derived from serviceForm.memberId, so it can never disagree with the
+  // calendar) or the search text while the user is typing with no member
+  // selected.
+  const serviceMemberDisplayValue = serviceForm.memberId
+    ? (selectedServiceMember?.displayName ?? "")
+    : serviceMemberQuery;
+  const isServiceMemberListVisible =
+    isServiceMemberPickerOpen &&
+    (serviceMemberQuery.trim() !== "" || !serviceForm.memberId);
 
   const serviceEntriesForCalendarMonth = useMemo(
     () =>
@@ -1398,10 +1408,7 @@ export function MemberManager({
     return requiresChallenge;
   }
 
-  async function loadDashboard(
-    preferredServiceMemberId = serviceForm.memberId,
-    month = calendarMonth
-  ) {
+  async function loadDashboard(month = calendarMonth) {
     if (!supabase) {
       return;
     }
@@ -1435,11 +1442,20 @@ export function MemberManager({
       } else {
         const nextMembers = membersResult.data.map(mapMemberRow);
         setMembers(nextMembers);
-        const nextMemberId = preferredServiceMemberId || nextMembers[0]?.id || "";
-        setServiceForm((currentForm) => ({
-          ...currentForm,
-          memberId: preferredServiceMemberId || currentForm.memberId || nextMemberId,
-        }));
+        // Keep whatever member the Service calendar is on right now. This
+        // reload is async, so a member id captured when it started can be
+        // stale: writing it back here used to flip the calendar onto the
+        // previously selected member while the picker still showed the new
+        // name. Only pick a default when nothing valid is selected.
+        setServiceForm((currentForm) => {
+          const hasCurrentMember =
+            Boolean(currentForm.memberId) &&
+            nextMembers.some((member) => member.id === currentForm.memberId);
+
+          return hasCurrentMember
+            ? currentForm
+            : { ...currentForm, memberId: nextMembers[0]?.id ?? "" };
+        });
       }
 
       if (servicesResult.error) {
@@ -2690,7 +2706,7 @@ export function MemberManager({
       ...currentForm,
       memberId,
     }));
-    setServiceMemberQuery(memberById.get(memberId)?.displayName ?? "");
+    setServiceMemberQuery("");
     setIsServiceMemberPickerOpen(false);
     setDateOverrides({});
     setStatusOverrides({});
@@ -2928,14 +2944,10 @@ export function MemberManager({
           )
         );
         resetForm();
-        await loadDashboard(updatedMember.id);
-        if (serviceForm.memberId === updatedMember.id) {
-          setServiceMemberQuery(updatedMember.displayName);
-          setIsServiceMemberPickerOpen(false);
-          setDateOverrides({});
-          setStatusOverrides({});
-        }
-        await refreshServiceCalendarMonth(updatedMember.id, calendarMonth);
+        // Reload data only. Editing a member must not move the Service
+        // calendar onto that member; the picker label is derived from the
+        // selected member, so a renamed member shows its new name anyway.
+        await loadDashboard();
         await recordAuditEvent({
           action: "member_updated",
           entityType: "member",
@@ -4440,10 +4452,8 @@ export function MemberManager({
                               id="service-member"
                               autoComplete="off"
                               className="pr-9"
-                              placeholder={
-                                selectedServiceMember?.displayName ?? "Search member name"
-                              }
-                              value={serviceMemberQuery}
+                              placeholder="Search member name"
+                              value={serviceMemberDisplayValue}
                               onBlur={() => {
                                 window.setTimeout(
                                   () => setIsServiceMemberPickerOpen(false),
@@ -4454,10 +4464,10 @@ export function MemberManager({
                                 const nextQuery = event.target.value;
                                 setServiceMemberQuery(nextQuery);
                                 setIsServiceMemberPickerOpen(true);
-                                if (
-                                  serviceForm.memberId &&
-                                  nextQuery !== selectedServiceMember?.displayName
-                                ) {
+                                // Typing means searching: drop the current
+                                // member (and its staged changes) so the box
+                                // shows the search text instead of the name.
+                                if (serviceForm.memberId) {
                                   setServiceForm((currentForm) => ({
                                     ...currentForm,
                                     memberId: "",
@@ -4470,6 +4480,7 @@ export function MemberManager({
                               onKeyDown={(event) => {
                                 if (
                                   event.key === "Enter" &&
+                                  isServiceMemberListVisible &&
                                   filteredServiceMembers[0]
                                 ) {
                                   event.preventDefault();
@@ -4501,8 +4512,7 @@ export function MemberManager({
                                 <XIcon />
                               </Button>
                             ) : null}
-                            {isServiceMemberPickerOpen &&
-                            (serviceMemberQuery.trim() || !serviceForm.memberId) ? (
+                            {isServiceMemberListVisible ? (
                               <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border bg-popover text-popover-foreground shadow-md dark:border-white/10">
                                 {filteredServiceMembers.length === 0 ? (
                                   <div className="px-3 py-2 text-sm text-muted-foreground">

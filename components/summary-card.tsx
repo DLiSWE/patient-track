@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangleIcon,
   BarChart3Icon,
@@ -39,7 +40,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import type { Member } from "@/lib/member-store";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
+import { type Member, providerOptions } from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 import {
   type CalendarDay,
@@ -83,6 +91,24 @@ const defaultSummaryWidgetVisibility: Record<SummaryWidgetKey, boolean> = {
   attendanceGrid: true,
   calendar: true,
 };
+
+// Attendance grid provider filter. "all" is the default; the other values are
+// the member `provider` codes from providerOptions. The selection lives in the
+// `?provider=` query string (alongside `?view=summary`) so it survives a reload.
+const allProvidersFilterValue = "all";
+const providerFilterQueryParam = "provider";
+
+const attendanceGridProviderFilterOptions = [
+  { label: "All providers", value: allProvidersFilterValue },
+  ...providerOptions,
+];
+
+function normalizeProviderFilter(value: string | null | undefined) {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return providerOptions.some((option) => option.value === normalized)
+    ? normalized
+    : allProvidersFilterValue;
+}
 
 export function SummaryCard({
   attendanceGridMembers,
@@ -136,6 +162,10 @@ export function SummaryCard({
 }) {
   const selectedExpectedCount = expectedMembersByDate.get(selectedDate)?.length ?? 0;
   const [gridQuery, setGridQuery] = useState("");
+  const searchParams = useSearchParams();
+  const [gridProviderFilter, setGridProviderFilter] = useState(() =>
+    normalizeProviderFilter(searchParams.get(providerFilterQueryParam))
+  );
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false);
   const [widgetVisibility, setWidgetVisibility] = useState<Record<SummaryWidgetKey, boolean>>(
     defaultSummaryWidgetVisibility
@@ -169,22 +199,52 @@ export function SummaryCard({
     });
   }
 
+  function handleGridProviderFilterChange(value: string | null) {
+    const next = normalizeProviderFilter(value);
+    setGridProviderFilter(next);
+
+    try {
+      const url = new URL(window.location.href);
+      if (next === allProvidersFilterValue) {
+        url.searchParams.delete(providerFilterQueryParam);
+      } else {
+        url.searchParams.set(providerFilterQueryParam, next);
+        // Pin the view too, so a reload lands back on this page with the
+        // filter applied instead of on the default Members view.
+        url.searchParams.set("view", "summary");
+      }
+      window.history.replaceState(window.history.state, "", url);
+    } catch {
+      // URL sync is best-effort; the filter still applies for this session.
+    }
+  }
+
   const attendanceGridDays = useMemo(
     () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
     [calendarDays]
   );
 
+  const providerFilteredAttendanceGridMembers = useMemo(() => {
+    if (gridProviderFilter === allProvidersFilterValue) {
+      return attendanceGridMembers;
+    }
+
+    return attendanceGridMembers.filter(
+      (member) => member.provider === gridProviderFilter
+    );
+  }, [attendanceGridMembers, gridProviderFilter]);
+
   const filteredAttendanceGridMembers = useMemo(() => {
     const normalizedQuery = gridQuery.trim().toLowerCase();
 
     if (!normalizedQuery) {
-      return attendanceGridMembers;
+      return providerFilteredAttendanceGridMembers;
     }
 
-    return attendanceGridMembers.filter((member) =>
+    return providerFilteredAttendanceGridMembers.filter((member) =>
       member.displayName.toLowerCase().includes(normalizedQuery)
     );
-  }, [attendanceGridMembers, gridQuery]);
+  }, [gridQuery, providerFilteredAttendanceGridMembers]);
 
   return (
     <Card className="dark:bg-card/95 dark:ring-white/10">
@@ -280,6 +340,32 @@ export function SummaryCard({
                 value={gridQuery}
                 onChange={(event) => setGridQuery(event.target.value)}
               />
+              <Select
+                value={gridProviderFilter}
+                onValueChange={handleGridProviderFilterChange}
+              >
+                <SelectTrigger
+                  aria-label="Filter attendance grid by provider"
+                  className="h-9 w-40 bg-background text-foreground dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                >
+                  {attendanceGridProviderFilterOptions.find(
+                    (option) => option.value === gridProviderFilter
+                  )?.label ?? "All providers"}
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {attendanceGridProviderFilterOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-muted-foreground">
+                {filteredAttendanceGridMembers.length} of {attendanceGridMembers.length}{" "}
+                member{attendanceGridMembers.length === 1 ? "" : "s"}
+              </span>
             </div>
           </div>
 
@@ -302,7 +388,9 @@ export function SummaryCard({
             <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
               {attendanceGridMembers.length === 0
                 ? "No active members"
-                : "No matching members"}
+                : providerFilteredAttendanceGridMembers.length === 0
+                  ? "No active members for this provider"
+                  : "No matching members"}
             </div>
           ) : (
             <ScrollArea className="h-[32rem] rounded-lg border dark:border-white/10">
