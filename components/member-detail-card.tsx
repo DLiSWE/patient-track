@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ArrowLeftIcon,
   CalendarCheckIcon,
@@ -7,6 +8,7 @@ import {
   ClipboardListIcon,
   GaugeIcon,
   PencilIcon,
+  StickyNoteIcon,
   TrendingUpIcon,
   UserRoundIcon,
 } from "lucide-react";
@@ -35,6 +37,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import {
   claimStatusOptions,
   getClaimStatusStyle,
@@ -47,7 +50,12 @@ import {
   normalizeMonthString,
   weekdayLabels,
 } from "@/lib/date-utils";
-import { getProviderLabel, type Member } from "@/lib/member-store";
+import {
+  getProviderLabel,
+  memberNotesMaxLength,
+  normalizeMemberNotes,
+  type Member,
+} from "@/lib/member-store";
 import type { ServiceEntry } from "@/lib/service-store";
 import { cn } from "@/lib/utils";
 
@@ -59,6 +67,7 @@ export function MemberDetailCard({
   onBack,
   onEdit,
   onMonthChange,
+  onSaveNotes,
   serviceEntries,
 }: {
   claims: Claim[];
@@ -69,6 +78,8 @@ export function MemberDetailCard({
   onBack: () => void;
   onEdit: (member: Member) => void;
   onMonthChange: (month: string) => void;
+  // Persists the Notes card; resolves true when the save succeeded.
+  onSaveNotes: (member: Member, notes: string) => Promise<boolean>;
   serviceEntries: ServiceEntry[];
 }) {
   const memberServices = serviceEntries
@@ -221,6 +232,8 @@ export function MemberDetailCard({
           tone="emerald"
         />
       </div>
+
+      <MemberNotesCard key={member.id} member={member} onSaveNotes={onSaveNotes} />
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <Card>
@@ -401,6 +414,94 @@ export function MemberDetailCard({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function MemberNotesCard({
+  member,
+  onSaveNotes,
+}: {
+  member: Member;
+  onSaveNotes: (member: Member, notes: string) => Promise<boolean>;
+}) {
+  // Keyed by member id in the parent, so a new member always starts from its
+  // own saved notes rather than carrying over another member's draft.
+  const [draft, setDraft] = useState(member.notes);
+  const [isSaving, setIsSaving] = useState(false);
+  const hasUnsavedChanges = normalizeMemberNotes(draft) !== member.notes;
+
+  async function saveDraft() {
+    if (!hasUnsavedChanges || isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+    const saved = await onSaveNotes(member, draft);
+    setIsSaving(false);
+
+    if (saved) {
+      setDraft(normalizeMemberNotes(draft));
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <StickyNoteIcon data-icon="inline-start" className="text-muted-foreground" />
+          Notes
+        </CardTitle>
+        <CardDescription>
+          Operational notes for this member. Leave out DOBs, IDs, auths, and diagnoses.
+        </CardDescription>
+        {hasUnsavedChanges ? (
+          <CardAction>
+            <Badge variant="secondary">Unsaved changes</Badge>
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <Textarea
+          aria-label={`Notes for ${member.displayName}`}
+          className="min-h-28"
+          disabled={isSaving}
+          maxLength={memberNotesMaxLength}
+          placeholder="Add a note about this member, e.g. preferred pickup time or a pending paperwork reminder."
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              void saveDraft();
+            }
+          }}
+        />
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>
+            {draft.length}/{memberNotesMaxLength} · Ctrl+Enter to save
+          </span>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!hasUnsavedChanges || isSaving}
+              onClick={() => setDraft(member.notes)}
+            >
+              Discard
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!hasUnsavedChanges || isSaving}
+              onClick={() => void saveDraft()}
+            >
+              {isSaving ? "Saving..." : "Save notes"}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

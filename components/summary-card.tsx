@@ -11,6 +11,7 @@ import {
   ClipboardListIcon,
   ClockIcon,
   LayoutGridIcon,
+  CalendarRangeIcon,
   SearchIcon,
   UsersIcon,
 } from "lucide-react";
@@ -98,6 +99,16 @@ const defaultSummaryWidgetVisibility: Record<SummaryWidgetKey, boolean> = {
 const allProvidersFilterValue = "all";
 const providerFilterQueryParam = "provider";
 
+// Segment colors for the Weekly members stacked bar, keyed by provider code.
+const weeklyProviderBarColors: Record<string, { bar: string; dot: string }> = {
+  empire: { bar: "bg-sky-500", dot: "bg-sky-500" },
+  vcm: { bar: "bg-violet-500", dot: "bg-violet-500" },
+  swh: { bar: "bg-emerald-500", dot: "bg-emerald-500" },
+  hf: { bar: "bg-amber-500", dot: "bg-amber-500" },
+};
+const otherProviderBarColor = { bar: "bg-zinc-400", dot: "bg-zinc-400" };
+const otherProviderLabel = "Other";
+
 const attendanceGridProviderFilterOptions = [
   { label: "All providers", value: allProvidersFilterValue },
   ...providerOptions,
@@ -119,6 +130,7 @@ export function SummaryCard({
   calendarDays,
   claimStats,
   countsByDate,
+  entries,
   expectedMembersByDate,
   isShowingExpectedMembers,
   memberById,
@@ -147,6 +159,9 @@ export function SummaryCard({
     total: number;
   };
   countsByDate: Map<string, number>;
+  // Every service entry in the selected month (all statuses); the weekly
+  // member count below only counts the Attended ones.
+  entries: ServiceEntry[];
   expectedMembersByDate: Map<string, Member[]>;
   isShowingExpectedMembers: boolean;
   memberById: Map<string, Member>;
@@ -223,6 +238,92 @@ export function SummaryCard({
     () => calendarDays.filter((day): day is CalendarDay => Boolean(day)),
     [calendarDays]
   );
+
+  // One row per calendar week of the month (calendarDays is laid out seven
+  // cells per week, leading/trailing blanks included): how many distinct
+  // members have an Attended entry in that week, plus the attended-service
+  // count for context.
+  const weeklyMemberCounts = useMemo(() => {
+    const attendedMembersByDate = new Map<string, Set<string>>();
+
+    for (const entry of entries) {
+      if (entry.serviceLabel.toLowerCase() !== "attended") {
+        continue;
+      }
+      const members = attendedMembersByDate.get(entry.serviceDate) ?? new Set<string>();
+      members.add(entry.memberId);
+      attendedMembersByDate.set(entry.serviceDate, members);
+    }
+
+    const weeks: Array<{
+      key: string;
+      label: string;
+      members: number;
+      services: number;
+      // Distinct members per provider for the week, in providerOptions order,
+      // with an "Other" bucket for members whose provider is blank or unknown.
+      byProvider: Array<{ value: string; label: string; count: number }>;
+    }> = [];
+    const knownProviders = new Set<string>(providerOptions.map((option) => option.value));
+
+    for (let start = 0; start < calendarDays.length; start += 7) {
+      const weekDays = calendarDays
+        .slice(start, start + 7)
+        .filter((day): day is CalendarDay => Boolean(day));
+
+      if (weekDays.length === 0) {
+        continue;
+      }
+
+      const members = new Set<string>();
+      const membersByProvider = new Map<string, Set<string>>();
+      let services = 0;
+
+      for (const day of weekDays) {
+        const dayMembers = attendedMembersByDate.get(day.date);
+        if (dayMembers) {
+          services += dayMembers.size;
+          for (const memberId of dayMembers) {
+            members.add(memberId);
+            const provider = memberById.get(memberId)?.provider ?? "";
+            const providerKey = knownProviders.has(provider) ? provider : "other";
+            const providerMembers =
+              membersByProvider.get(providerKey) ?? new Set<string>();
+            providerMembers.add(memberId);
+            membersByProvider.set(providerKey, providerMembers);
+          }
+        }
+      }
+
+      const byProvider = [
+        ...providerOptions.map((option) => ({
+          value: option.value,
+          label: option.label,
+          count: membersByProvider.get(option.value)?.size ?? 0,
+        })),
+        {
+          value: "other",
+          label: otherProviderLabel,
+          count: membersByProvider.get("other")?.size ?? 0,
+        },
+      ];
+
+      const first = weekDays[0];
+      const last = weekDays[weekDays.length - 1];
+      weeks.push({
+        key: first.date,
+        label:
+          first.date === last.date
+            ? String(first.dayNumber)
+            : `${first.dayNumber}–${last.dayNumber}`,
+        members: members.size,
+        services,
+        byProvider,
+      });
+    }
+
+    return weeks;
+  }, [calendarDays, entries, memberById]);
 
   const providerFilteredAttendanceGridMembers = useMemo(() => {
     if (gridProviderFilter === allProvidersFilterValue) {
@@ -528,6 +629,88 @@ export function SummaryCard({
                 value={stats.averagePerServiceDay.toFixed(1)}
               />
               <SummaryMetric label="Busiest" value={stats.busiestCount} />
+            </div>
+
+            <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="mb-3 flex items-center gap-2">
+                <CalendarRangeIcon
+                  data-icon="inline-start"
+                  className="text-muted-foreground dark:text-sky-200"
+                />
+                <h3 className="text-sm font-medium">Weekly members</h3>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  attended at least once
+                </span>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                {providerOptions.map((option) => (
+                  <span key={option.value} className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "size-2 rounded-full",
+                        weeklyProviderBarColors[option.value]?.dot ?? otherProviderBarColor.dot
+                      )}
+                    />
+                    {option.label}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-col gap-3">
+                {weeklyMemberCounts.map((week) => {
+                  const maxMembers = Math.max(
+                    ...weeklyMemberCounts.map((item) => item.members),
+                    1
+                  );
+                  const providersWithMembers = week.byProvider.filter(
+                    (provider) => provider.count > 0
+                  );
+
+                  return (
+                    <div
+                      key={week.key}
+                      className="flex flex-col gap-1"
+                      title={`${week.services} attended service${week.services === 1 ? "" : "s"} this week`}
+                    >
+                      <div className="grid grid-cols-[44px_1fr_auto] items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{week.label}</span>
+                        <div className="flex h-2 overflow-hidden rounded-full bg-muted dark:bg-white/10">
+                          {providersWithMembers.map((provider) => (
+                            <div
+                              key={provider.value}
+                              className={cn(
+                                "h-2",
+                                weeklyProviderBarColors[provider.value]?.bar ??
+                                  otherProviderBarColor.bar
+                              )}
+                              style={{ width: `${(provider.count / maxMembers) * 100}%` }}
+                              title={`${provider.label}: ${provider.count}`}
+                            />
+                          ))}
+                        </div>
+                        <span className="text-right text-xs tabular-nums">
+                          <span className="font-medium text-foreground">{week.members}</span>
+                          <span className="text-muted-foreground"> members</span>
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-[44px_1fr] gap-2">
+                        <span />
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+                          {providersWithMembers.length === 0 ? (
+                            <span>No attendance</span>
+                          ) : (
+                            providersWithMembers.map((provider) => (
+                              <span key={provider.value}>
+                                {provider.label}{" "}
+                                <span className="font-medium text-foreground">{provider.count}</span>
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="rounded-lg border bg-background/60 p-3 dark:border-white/10 dark:bg-white/[0.03]">

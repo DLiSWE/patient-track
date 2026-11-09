@@ -17,6 +17,7 @@ import {
   PlusIcon,
   RotateCcwIcon,
   Trash2Icon,
+  ListChecksIcon,
   XIcon,
 } from "lucide-react";
 
@@ -180,6 +181,15 @@ export function ClaimsDashboard({
   const [deleteMemberTarget, setDeleteMemberTarget] = useState<{
     memberId: string;
     memberName: string;
+  } | null>(null);
+  // "Set all" status for one member's listed claims: the status picked per
+  // member (before Apply) and the pending confirmation.
+  const [bulkStatusByMember, setBulkStatusByMember] = useState<Record<string, string>>({});
+  const [bulkStatusTarget, setBulkStatusTarget] = useState<{
+    memberId: string;
+    memberName: string;
+    claimIds: string[];
+    status: string;
   } | null>(null);
   const [isResetFailedOpen, setIsResetFailedOpen] = useState(false);
   const [isDeleteWeekOpen, setIsDeleteWeekOpen] = useState(false);
@@ -759,6 +769,89 @@ export function ClaimsDashboard({
         },
       });
       toast.success(`Deleted all claims for ${memberName}.`);
+    }
+
+    setIsSaving(false);
+    setBusyMessage(null);
+  }
+
+  async function confirmSetMemberClaimsStatus() {
+    if (!supabase || !bulkStatusTarget) {
+      return;
+    }
+
+    const { memberId, memberName, claimIds, status } = bulkStatusTarget;
+    const now = new Date().toISOString();
+    const normalizedStatus = status.toLowerCase();
+    const payload: Record<string, string | null> = { status, updated_at: now };
+    if (normalizedStatus !== "failed") {
+      // Leaving a stale failure reason on a non-Failed claim is misleading.
+      payload.last_failure_reason = null;
+    }
+    if (normalizedStatus === "validated") {
+      payload.submitted_at = now;
+    }
+
+    setIsSaving(true);
+    setBusyMessage(`Setting ${claimIds.length} claim(s) for ${memberName} to ${status}...`);
+
+    const updatedClaims: Claim[] = [];
+    let failureMessage: string | null = null;
+
+    // Chunked so a member with many listed dates never builds an over-long URL.
+    for (let index = 0; index < claimIds.length; index += 100) {
+      const chunk = claimIds.slice(index, index + 100);
+      const { data, error } = await supabase
+        .from("claims")
+        .update(payload)
+        .in("id", chunk)
+        .select(
+          "id, member_id, service_date, status, attempt_count, last_attempted_at, last_failure_reason, submitted_at, created_at, updated_at"
+        );
+
+      if (error) {
+        failureMessage = error.message;
+        break;
+      }
+      updatedClaims.push(...(data ?? []).map(mapClaimRow));
+    }
+
+    if (updatedClaims.length > 0) {
+      const updatedIds = new Set(updatedClaims.map((claim) => claim.id));
+      updateClaims((currentClaims) =>
+        getCanonicalClaims([
+          ...currentClaims.filter((claim) => !updatedIds.has(claim.id)),
+          ...updatedClaims,
+        ])
+      );
+      await onAudit?.({
+        action: "member_claims_status_set",
+        entityType: "claim",
+        entityId: memberId,
+        summary: `Set ${updatedClaims.length} claim(s) for ${memberName} to ${status}.`,
+        metadata: {
+          member: memberName,
+          status,
+          count: updatedClaims.length,
+          serviceDates: updatedClaims.map((claim) => claim.serviceDate).sort(),
+        },
+      });
+    }
+
+    if (failureMessage) {
+      toast.error(
+        updatedClaims.length > 0
+          ? `Updated ${updatedClaims.length} of ${claimIds.length} claims before an error: ${failureMessage}`
+          : failureMessage
+      );
+    } else {
+      toast.success(`Set ${updatedClaims.length} claim(s) for ${memberName} to ${status}.`);
+      setBulkStatusTarget(null);
+      setBulkStatusByMember((current) => {
+        const next = { ...current };
+        delete next[memberId];
+        return next;
+      });
     }
 
     setIsSaving(false);
@@ -1622,6 +1715,61 @@ export function ClaimsDashboard({
                         <TableRow key={`${group.memberId}-dates`}>
                           <TableCell colSpan={7} className="bg-muted/30 p-0">
                             <div className="max-h-80 overflow-y-auto p-3">
+                              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs text-muted-foreground">
+                                  {group.claims.length} date{group.claims.length === 1 ? "" : "s"} listed
+                                  {statusFilter !== "All" || dateFilter
+                                    ? " (matching the current filters)"
+                                    : ""}
+                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs text-muted-foreground">Set all to</span>
+                                  <Select
+                                    value={bulkStatusByMember[group.memberId] ?? ""}
+                                    onValueChange={(value) =>
+                                      setBulkStatusByMember((current) => ({
+                                        ...current,
+                                        [group.memberId]: value ?? "",
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger
+                                      className="h-8 w-36"
+                                      aria-label={`Status to apply to all listed claims for ${group.member?.displayName ?? "this member"}`}
+                                    >
+                                      <span className="truncate text-left">
+                                        {bulkStatusByMember[group.memberId] || "Choose status"}
+                                      </span>
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectGroup>
+                                        {claimStatusOptions.map((status) => (
+                                          <SelectItem key={status.value} value={status.value}>
+                                            {status.label}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectGroup>
+                                    </SelectContent>
+                                  </Select>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={!bulkStatusByMember[group.memberId] || isSaving}
+                                    onClick={() =>
+                                      setBulkStatusTarget({
+                                        memberId: group.memberId,
+                                        memberName: group.member?.displayName ?? "this member",
+                                        claimIds: group.claims.map((claim) => claim.id),
+                                        status: bulkStatusByMember[group.memberId],
+                                      })
+                                    }
+                                  >
+                                    <ListChecksIcon data-icon="inline-start" />
+                                    Apply to all
+                                  </Button>
+                                </div>
+                              </div>
                               <div className="grid gap-2">
                                 {group.claims.map((claim) => (
                                   <div
@@ -1887,6 +2035,38 @@ export function ClaimsDashboard({
               Delete all
             </AlertDialogAction>
             <AlertDialogCancel>Keep claims</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(bulkStatusTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setBulkStatusTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Set {bulkStatusTarget?.claimIds.length ?? 0} claim
+              {bulkStatusTarget?.claimIds.length === 1 ? "" : "s"} to {bulkStatusTarget?.status}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Every date listed for {bulkStatusTarget?.memberName ?? "this member"} will be
+              marked {bulkStatusTarget?.status}
+              {bulkStatusTarget?.status.toLowerCase() === "required"
+                ? ", which puts them back in the queue for the next claims run"
+                : ""}
+              . Dates hidden by the current filters are not changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={confirmSetMemberClaimsStatus} disabled={isSaving}>
+              Apply to all
+            </AlertDialogAction>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -299,7 +299,7 @@ export default function ToolsPage() {
     const membersResult = await supabase
       .from("members")
       .select(
-        "id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on"
+        "id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes"
       )
       .in("id", memberIds);
 

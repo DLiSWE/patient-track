@@ -9,11 +9,14 @@ export type Member = {
   // Furthest date the member's currently-known authorizations cover, written
   // by the claims-v2 bot's `sync-auths` command. Not editable from this app.
   authExpiresOn: string | null;
+  // Free-text operational notes, edited from the member profile page's Notes
+  // card (not the member form). Empty string when none.
+  notes: string;
 };
 
 export type MemberFormValues = Omit<
   Member,
-  "id" | "createdAt" | "updatedAt" | "archivedAt" | "authExpiresOn"
+  "id" | "createdAt" | "updatedAt" | "archivedAt" | "authExpiresOn" | "notes"
 >;
 
 export const emptyMemberForm: MemberFormValues = {
@@ -38,6 +41,7 @@ export type MemberRow = {
   updated_at: string;
   archived_at: string | null;
   auth_expires_on: string | null;
+  notes: string | null;
 };
 
 const serviceDayTokens = [
@@ -60,6 +64,7 @@ export function mapMemberRow(row: MemberRow): Member {
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
     authExpiresOn: row.auth_expires_on,
+    notes: row.notes ?? "",
   };
 }
 
@@ -68,6 +73,19 @@ export function toMemberInsert(values: MemberFormValues) {
     display_name: normalizeMemberName(values.displayName),
     provider: normalizeProvider(values.provider) || null,
     service_days: normalizeServiceDays(values.serviceDays) || null,
+  };
+}
+
+export const memberNotesMaxLength = 2000;
+
+export function normalizeMemberNotes(notes: string) {
+  return notes.replace(/\r\n?/g, "\n").trim().slice(0, memberNotesMaxLength);
+}
+
+export function toMemberNotesUpdate(notes: string) {
+  return {
+    notes: normalizeMemberNotes(notes) || null,
+    updated_at: new Date().toISOString(),
   };
 }
 

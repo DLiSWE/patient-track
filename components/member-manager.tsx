@@ -72,6 +72,7 @@ import {
   normalizeServiceDays,
   providerOptions,
   toMemberInsert,
+  toMemberNotesUpdate,
   toMemberUpdate,
 } from "@/lib/member-store";
 import { AddMembersDialog } from "@/components/add-members-dialog";
@@ -1420,7 +1421,7 @@ export function MemberManager({
     try {
       const membersRequest = supabase
         .from("members")
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
         .order("display_name", { ascending: true });
 
       const [membersResult, servicesResult, claimsResult, closedDaysResult] = await Promise.all([
@@ -2741,6 +2742,52 @@ export function MemberManager({
     void refreshMonthData(month);
   }
 
+  // Saves the profile page's Notes card. Returns true on success so the card
+  // can clear its unsaved state. The note text itself is kept out of the
+  // audit log (only its length is recorded) to keep PHI lean.
+  async function handleSaveMemberNotes(member: Member, notes: string) {
+    if (!supabase) {
+      return false;
+    }
+
+    const { data, error } = await supabase
+      .from("members")
+      .update(toMemberNotesUpdate(notes))
+      .eq("id", member.id)
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
+      .single();
+
+    if (error) {
+      showError(error.message);
+      return false;
+    }
+
+    const updatedMember = mapMemberRow(data);
+    setMembers((currentMembers) =>
+      currentMembers.map((current) =>
+        current.id === updatedMember.id ? updatedMember : current
+      )
+    );
+    await recordAuditEvent({
+      action: "member_notes_updated",
+      entityType: "member",
+      entityId: updatedMember.id,
+      summary: updatedMember.notes
+        ? `Updated notes for ${updatedMember.displayName}.`
+        : `Cleared notes for ${updatedMember.displayName}.`,
+      metadata: {
+        member: updatedMember.displayName,
+        notesLength: updatedMember.notes.length,
+      },
+    });
+    showInfo(
+      updatedMember.notes
+        ? `Saved notes for ${updatedMember.displayName}.`
+        : `Cleared notes for ${updatedMember.displayName}.`
+    );
+    return true;
+  }
+
   function handleMemberDetailMonthChange(rawMonth: string) {
     const month = normalizeMonthString(rawMonth);
     setMemberDetailMonth(month);
@@ -2931,7 +2978,7 @@ export function MemberManager({
         .from("members")
         .update(toMemberUpdate(memberPayload))
         .eq("id", editingId)
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
         .single();
 
       if (error) {
@@ -2965,7 +3012,7 @@ export function MemberManager({
       const { data, error } = await supabase
         .from("members")
         .insert(toMemberInsert(memberPayload))
-        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+        .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
         .single();
 
       if (error) {
@@ -3035,7 +3082,7 @@ export function MemberManager({
     const { data, error } = await supabase
       .from("members")
       .insert(inserts)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on");
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes");
 
     if (error) {
       showError(error.message);
@@ -3105,7 +3152,7 @@ export function MemberManager({
       .from("members")
       .update({ archived_at: archivedAt, updated_at: new Date().toISOString() })
       .eq("id", archiveTarget.id)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
       .single();
 
     if (error) {
@@ -3175,7 +3222,7 @@ export function MemberManager({
       .from("members")
       .update({ archived_at: null })
       .eq("id", member.id)
-      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+      .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
       .single();
 
     if (error) {
@@ -4301,6 +4348,7 @@ export function MemberManager({
                 calendarDays={summaryCalendarDays}
                 claimStats={summaryClaimStats}
                 countsByDate={summaryCountsByDate}
+                entries={summaryEntriesForMonth}
                 expectedMembersByDate={summaryExpectedMembersByDate}
                 isShowingExpectedMembers={isSelectedSummaryDateFuture}
                 memberById={memberById}
@@ -4374,6 +4422,7 @@ export function MemberManager({
                   router.push("/");
                 }}
                 onMonthChange={handleMemberDetailMonthChange}
+                onSaveNotes={handleSaveMemberNotes}
                 serviceEntries={serviceEntries}
               />
             ) : activeView === "services" ? (

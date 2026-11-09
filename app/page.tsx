@@ -422,7 +422,7 @@ export default function HomePage() {
         await Promise.all([
           supabaseClient
             .from("members")
-            .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on")
+            .select("id, display_name, provider, service_days, created_at, updated_at, archived_at, auth_expires_on, notes")
             .order("display_name", { ascending: true }),
           fetchServiceEntriesInRange(supabaseClient, monthRange.start, monthRange.end),
           fetchClaimsInRange(supabaseClient, monthRange.start, monthRange.end),
