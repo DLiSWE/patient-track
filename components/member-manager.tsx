@@ -1229,6 +1229,19 @@ export function MemberManager({
     () => claims.filter((claim) => claim.serviceDate.startsWith(`${summaryMonth}-`)),
     [claims, summaryMonth]
   );
+  // Member -> service date -> claim status, for the attendance grid's claim
+  // markers. One claim row per attended day, so a plain Map is enough.
+  const summaryClaimStatusByMember = useMemo(() => {
+    const statusByMember = new Map<string, Map<string, string>>();
+
+    for (const claim of summaryClaimsForMonth) {
+      const memberClaims = statusByMember.get(claim.memberId) ?? new Map<string, string>();
+      memberClaims.set(claim.serviceDate, claim.status);
+      statusByMember.set(claim.memberId, memberClaims);
+    }
+
+    return statusByMember;
+  }, [summaryClaimsForMonth]);
   const summaryClaimStats = useMemo(() => {
     const counts = {
       accepted: 0,
@@ -4342,6 +4355,7 @@ export function MemberManager({
               <SummaryCard
                 attendanceGridMembers={attendanceGridMembers}
                 attendanceGridStatusByMember={attendanceGridStatusByMember}
+                attendanceGridClaimStatusByMember={summaryClaimStatusByMember}
                 attendeePage={safeSummaryAttendeesPage}
                 attendeePageCount={summaryAttendeesPageCount}
                 attendeeSearchQuery={summaryMemberQuery}

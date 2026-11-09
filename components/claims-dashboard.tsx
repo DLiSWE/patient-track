@@ -1877,7 +1877,7 @@ export function ClaimsDashboard({
             </DialogDescription>
           </DialogHeader>
 
-          <form className="flex flex-col gap-4" onSubmit={handleFormSubmit}>
+          <form className="flex min-w-0 flex-col gap-4" onSubmit={handleFormSubmit}>
             <Field label="Member" htmlFor="claim-member">
               <Select
                 value={form.memberId}
@@ -1950,6 +1950,9 @@ export function ClaimsDashboard({
               <Field label="Failure reason" htmlFor="claim-failure-reason">
                 <Textarea
                   id="claim-failure-reason"
+                  // Long bot messages (URLs with no spaces) must wrap and scroll
+                  // inside the dialog instead of widening it.
+                  className="max-h-40 min-w-0 overflow-y-auto break-all"
                   placeholder="Why did this attempt fail?"
                   value={form.lastFailureReason}
                   onChange={(event) =>

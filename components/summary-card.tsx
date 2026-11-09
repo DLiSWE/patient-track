@@ -6,6 +6,7 @@ import {
   AlertTriangleIcon,
   BarChart3Icon,
   CheckCircle2Icon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ClipboardListIcon,
@@ -109,6 +110,47 @@ const weeklyProviderBarColors: Record<string, { bar: string; dot: string }> = {
 const otherProviderBarColor = { bar: "bg-zinc-400", dot: "bg-zinc-400" };
 const otherProviderLabel = "Other";
 
+// Claim markers drawn on an attendance-grid square. A Required row exists for
+// every attended day as soon as it's saved, so marking it would just repeat
+// the attendance color; the marks are for claims that have moved on from that.
+// White marks are used instead of the claim palette's teal/cyan dots because
+// those hues vanish against the emerald Attended square at 16px.
+const attendanceGridClaimMarkers: Array<{ status: string; label: string }> = [
+  { status: "created", label: "Claim created" },
+  { status: "validated", label: "Claim validated" },
+  { status: "failed", label: "Claim failed" },
+];
+
+function ClaimMarker({ status }: { status: string }) {
+  const normalized = status.toLowerCase();
+  if (normalized === "created") {
+    return (
+      <span
+        className="absolute left-1/2 top-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white"
+        aria-hidden="true"
+      />
+    );
+  }
+  if (normalized === "validated") {
+    return (
+      <CheckIcon
+        className="absolute left-1/2 top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 text-white"
+        strokeWidth={3.5}
+        aria-hidden="true"
+      />
+    );
+  }
+  if (normalized === "failed") {
+    return (
+      <span
+        className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-rose-500 ring-1 ring-background"
+        aria-hidden="true"
+      />
+    );
+  }
+  return null;
+}
+
 const attendanceGridProviderFilterOptions = [
   { label: "All providers", value: allProvidersFilterValue },
   ...providerOptions,
@@ -122,6 +164,7 @@ function normalizeProviderFilter(value: string | null | undefined) {
 }
 
 export function SummaryCard({
+  attendanceGridClaimStatusByMember,
   attendanceGridMembers,
   attendanceGridStatusByMember,
   attendeePage,
@@ -144,6 +187,8 @@ export function SummaryCard({
   visibleEntries,
   visibleExpectedMembers,
 }: {
+  // Member id -> service date -> claim status for the selected month.
+  attendanceGridClaimStatusByMember: Map<string, Map<string, string>>;
   attendanceGridMembers: Member[];
   attendanceGridStatusByMember: Map<string, Map<string, string>>;
   attendeePage: number;
@@ -483,6 +528,15 @@ export function SummaryCard({
               <span className="size-2.5 rounded-sm bg-muted dark:bg-white/10" />
               Not expected
             </span>
+            <span className="hidden h-3 self-center border-l dark:border-white/15 sm:inline-block" />
+            {attendanceGridClaimMarkers.map((marker) => (
+              <span key={marker.status} className="flex items-center gap-1.5">
+                <span className="relative inline-block size-4 rounded-sm bg-emerald-500">
+                  <ClaimMarker status={marker.status} />
+                </span>
+                {marker.label}
+              </span>
+            ))}
           </div>
 
           {attendanceGridDays.length === 0 || filteredAttendanceGridMembers.length === 0 ? (
@@ -517,6 +571,7 @@ export function SummaryCard({
                 <tbody>
                   {filteredAttendanceGridMembers.map((member) => {
                     const memberStatuses = attendanceGridStatusByMember.get(member.id);
+                    const memberClaimStatuses = attendanceGridClaimStatusByMember.get(member.id);
 
                     return (
                       <tr key={member.id}>
@@ -525,25 +580,33 @@ export function SummaryCard({
                         </td>
                         {attendanceGridDays.map((day) => {
                           const status = memberStatuses?.get(day.date);
+                          const claimStatus = memberClaimStatuses?.get(day.date);
+                          let title: string | undefined;
+                          if (status) {
+                            title = `${member.displayName} — ${day.date}: ${status}`;
+                            if (claimStatus) {
+                              title += ` · Claim: ${claimStatus}`;
+                            } else if (status.toLowerCase() === "attended") {
+                              title += " · No claim row";
+                            }
+                          }
 
                           return (
                             <td
                               key={day.date}
                               className="border-b px-0.5 py-1 dark:border-white/10"
-                              title={
-                                status
-                                  ? `${member.displayName} — ${day.date}: ${status}`
-                                  : undefined
-                              }
+                              title={title}
                             >
                               <span
                                 className={cn(
-                                  "mx-auto block size-4 rounded-sm",
+                                  "relative mx-auto block size-4 rounded-sm",
                                   status
                                     ? getServiceStatusStyle(status).dot
                                     : "bg-muted dark:bg-white/10"
                                 )}
-                              />
+                              >
+                                {claimStatus ? <ClaimMarker status={claimStatus} /> : null}
+                              </span>
                             </td>
                           );
                         })}
